@@ -120,3 +120,172 @@ Inside a trigger, `new` means "the row that was just inserted".
 
 - `raw_user_meta_data`: extra info sent with the signup (we send `full_name`). `->> 'full_name'` reads that field as text.
 - `coalesce(a, '')`: "use `a`, but if it's empty (NULL), use `''`". It keeps the insert from failing if a name wasn't sent.
+
+---
+
+## Cookie
+
+**Everyday example:** a token you get at a cloakroom. You show it every time you come back, and the attendant knows which coat is yours.
+
+A cookie is a small piece of text the server asks the browser to keep. The browser then **automatically sends it back with every request** to that site. That is how the server knows who is asking without you typing your password on every page.
+
+Cookies can be marked **HttpOnly** (JavaScript in the page can't read them, which makes them hard to steal) and **Secure** (only sent over HTTPS). Supabase sets these for us.
+
+## Session
+
+The "you are logged in" state. With Supabase it is made of two tokens, stored in cookies.
+
+## Access token (JWT) and claims
+
+**Everyday example:** a visitor pass with your name, an expiry time and an official stamp.
+
+The **access token** is a **JWT**: text with three parts, `header.payload.signature`.
+- The **payload** holds the **claims**: facts like `sub` (the user's id), `email`, `exp` (expiry time).
+- The **signature** is Supabase's stamp. If anyone changes even one letter of the payload, the stamp no longer matches.
+
+It expires after about **1 hour** on purpose: if it's stolen, it's only useful briefly.
+
+## Refresh token
+
+A second, longer-lived token whose only job is to get a **new access token** when the old one expires. Supabase refresh tokens are **single-use**: each refresh gives you a new pair.
+
+## getClaims() vs getSession() vs getUser()
+
+| Method | What it does | Trust it? |
+|---|---|---|
+| `getSession()` | Reads the cookie and believes it | **No.** Anyone can edit a cookie. |
+| `getClaims()` | Reads the cookie, **checks the signature**, refreshes if expired | **Yes.** Fast, usually no network call. |
+| `getUser()` | Asks the Supabase server about the user | Yes, but needs a network call each time. |
+
+We use `getClaims()`.
+
+## Proxy (Next.js 16; called "middleware" before)
+
+**Everyday example:** the security guard at a building's gate. Everyone passes him before reaching any office. He checks your pass and sends you to reception if you don't have one.
+
+`proxy.ts` is a function that Next.js runs **before** every matching request, before any page code. Ours refreshes the login and redirects logged-out users to `/login`.
+
+The **matcher** decides which URLs the guard checks. We skip images, CSS/JS files (no need to log in to load a logo) and `/api` (API routes check tokens themselves, because Flutter doesn't use cookies).
+
+**The guard is only the first check.** Next.js warns not to rely on proxy alone; every place that reads data also checks who is asking ("defense in depth").
+
+## Redirect
+
+A response that says "go to this other URL instead" (status 307). The browser follows it automatically.
+
+## Server Component, Server Action
+
+- **Server Component:** a React page or component that runs on the server and sends finished HTML. It **can read cookies but can't change them.**
+- **Server Action:** a function marked `"use server"` that a form can call directly, like a mini API endpoint. It **can** change cookies. We'll use these for login and signup.
+
+## Cache headers (Cache-Control)
+
+Instructions to browsers and CDNs (big caching servers in front of websites) about whether they may store a copy of a response. When a response sets login cookies, Supabase gives us `Cache-Control: no-store`, meaning "never store this". Otherwise a CDN could hand one teacher's login cookie to another teacher.
+
+---
+
+## HTML form, FormData
+
+A `<form>` collects inputs. Each input's `name` becomes a key. When submitted, the browser sends all of them to the server together. On the server they arrive as **FormData**: `formData.get("email")` gives the email the user typed.
+
+`required`, `type="email"` and `minLength` make the **browser** check the fields before sending. That is only a convenience: anyone can skip the browser, so **the server must check again**.
+
+## Server Action as a form's `action`
+
+`<form action={login}>` means "when submitted, run the `login` function **on the server** with the form's FormData". Next.js creates the hidden endpoint for us. The file has `"use server"` at the top so every function in it is a Server Action.
+
+## Query string (search params)
+
+The part of a URL after `?`: `/login?error=Invalid%20login%20credentials`. It's how we pass a short message to the next page. `%20` is a space, encoded so it's safe in a URL; `URLSearchParams` does that encoding for us.
+
+In Next.js 16, a page receives `searchParams` as a **Promise**, so you `await` it.
+
+## Static shell, Suspense and streaming (cacheComponents)
+
+**Everyday example:** a restaurant brings bread and water the moment you sit down, and the main dish follows when it's cooked. You aren't left at an empty table.
+
+This project has `cacheComponents: true` in `next.config.ts`. Next.js then builds the parts of each page that are the same for everyone **ahead of time** (the **static shell**) and sends them instantly.
+
+Parts that depend on **this request** (cookies, the query string) can't be built ahead. They must be wrapped in `<Suspense fallback={...}>`: the shell is sent first with the fallback ("Loading…"), and the real content **streams in** when ready. Reading cookies or `searchParams` outside a `<Suspense>` is an error in this mode.
+
+In our pages, the forms are part of the static shell; only the error notice and "Logged in as…" stream in.
+
+## Email confirmation
+
+If "Confirm email" is turned on in Supabase (Authentication → Sign In / Providers → Email), sign-up doesn't log the user in. Supabase emails a link; clicking it confirms the account, and then the user can log in. Supabase's built-in email sender only allows a few emails per hour, so for development it's common to turn confirmation off.
+
+---
+
+## API, endpoint, Route Handler
+
+An **API** is a set of URLs that return data (usually JSON) instead of web pages, for other programs to use, like our Flutter app. Each URL + method (`GET /api/v1/me`) is an **endpoint**.
+
+In Next.js, an endpoint is a `route.ts` file. The folder path is the URL (`app/api/v1/me/route.ts` → `/api/v1/me`), and the exported function's name is the HTTP method (`export async function GET`).
+
+## HTTP methods and status codes
+
+- **Methods** say what you want: `GET` read, `POST` create, `PATCH` change, `DELETE` remove.
+- **Status codes** say how it went: `200` OK, `307` redirect, `400` bad input, `401` not logged in, `403` logged in but not allowed, `404` not found, `500` the server crashed.
+
+## Authorization header and Bearer token
+
+Apps don't have a browser cookie box, so they send the login token themselves, in a request header:
+
+```
+Authorization: Bearer eyJhbGciOi...
+```
+
+"Bearer" means "whoever carries this token is the user", just like a cookie. Our API reads it, checks Supabase's signature with `getClaims(token)`, and gets the teacher id from `claims.sub`.
+
+## JSON
+
+The text format APIs use for data: `{ "teacher": { "fullName": "Ali", "email": "ali@example.com" } }`. `Response.json(...)` turns a JavaScript object into it.
+
+## SQL JOIN and AS
+
+- `JOIN auth.users u ON u.id = t.id`: combine each teacher row with the matching login row, so one query gets the name (from `teachers`) and the email (from `auth.users`).
+- `t.full_name AS "fullName"`: rename the column in the result. The quotes keep the capital N (Postgres lowercases names without quotes).
+
+## CSRF (why the API doesn't accept cookies)
+
+**Cross-Site Request Forgery:** a bad website makes your browser send a request to *our* site, and the browser attaches *our* cookies automatically, so the request runs as you. A Bearer token is never attached automatically, so an API that only accepts Bearer tokens isn't open to this.
+
+---
+
+## One-to-many and many-to-many
+
+- **One-to-many:** one semester has many courses, but each course is in exactly one semester. The "many" side stores the link: `courses.semester_id`.
+- **Many-to-many:** a section has many students, and a student can be in many sections. Neither side can hold a single id, so a **table in the middle** (a *junction table*) stores one row per pair: `enrollments (section_id, student_id)`.
+
+**Everyday example:** a class register. Each line says "this student is in this class". The same student can appear in several registers.
+
+## Normalisation (why not one big table)
+
+Store each fact **once**. "Fall 2026" lives in one `semesters` row; courses point to it by id. Renaming it is then one update, not a hunt through every course row. Splitting data into linked tables this way is called **normalisation**.
+
+## Default values: gen_random_uuid()
+
+`id uuid primary key default gen_random_uuid()`: if an insert doesn't give an `id`, Postgres makes a new random UUID. Our code never has to invent ids.
+
+## Constraints: unique, check, not null
+
+Rules the **database** enforces, no matter which code inserts the data:
+- `not null`: the column must have a value.
+- `unique (teacher_id, roll_number)`: the **pair** can't repeat. Two teachers can both have roll number "21-001", but one teacher can't have it twice.
+- `check (end_date >= start_date)`: any row breaking the rule is refused with an error.
+- A **composite primary key** `primary key (section_id, student_id)` means the same student can't be enrolled in the same section twice.
+
+## date vs timestamptz
+
+- `date`: just a calendar day (`2026-09-01`). Used for semester start and end.
+- `timestamptz`: an exact moment, with time and timezone. Used for `created_at`.
+
+## Index
+
+**Everyday example:** the index at the back of a book. Instead of reading every page to find "trigger", you look it up and jump straight there.
+
+An index lets Postgres find rows by a column without scanning the whole table. Primary keys and `unique` rules get one automatically. Postgres does **not** automatically index foreign-key columns, so we add them where we'll search often: `topics(course_id)` ("all topics of this course"), `enrollments(student_id)` ("all sections of this student").
+
+## Savepoint
+
+A bookmark inside a transaction. `ROLLBACK TO SAVEPOINT s` undoes everything after the bookmark but keeps the transaction going. We used it to test several "this should fail" inserts in one transaction. In Postgres, once a statement fails, the transaction refuses every further command until you roll back, so the savepoint lets the test continue.
