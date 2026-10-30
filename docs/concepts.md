@@ -340,3 +340,56 @@ When Postgres refuses something, the error has a 5-character `code`:
 ## The `date` timezone trap
 
 `pg` turns a Postgres `date` like `2026-09-01` into a JavaScript `Date` at **midnight in the server's timezone**. Sent as JSON, that becomes UTC, e.g. `2026-08-31T19:00:00.000Z` on a Pakistan server: **the wrong day**. Selecting `start_date::text` makes Postgres send the plain text `"2026-09-01"`, so no conversion happens.
+
+---
+
+## Nested URLs (`/semesters/<id>/courses`)
+
+When something is always created **inside** a parent, the URL shows the parent: `POST /semesters/<id>/courses` means "add a course to *this* semester". Once the course exists, it has its own id, so editing and deleting use the shorter `/courses/<id>`.
+
+## Checking ownership through a parent: INSERT … SELECT, UPDATE … FROM, DELETE … USING
+
+`courses` has no `teacher_id`; its owner is found through `semesters`. Postgres lets one statement both **check the parent** and **change the row**:
+
+- `INSERT INTO courses (...) SELECT id, $2, $3 FROM semesters WHERE id = $1 AND teacher_id = $4`: the `SELECT` produces **one row only if the semester is yours**, and that row is what gets inserted. Not yours → nothing inserted → empty `RETURNING` → 404.
+- `UPDATE courses c ... FROM semesters s WHERE c.id = $3 AND s.id = c.semester_id AND s.teacher_id = $4`: update the course only when it can be joined to a semester owned by this teacher.
+- `DELETE FROM courses c USING semesters s WHERE ...`: the same idea for deleting.
+
+Doing the check and the change **in one statement** means there's no gap between "check" and "change" where something could slip through.
+
+---
+
+## PUT vs PATCH
+
+- `PATCH` = "change **some** fields of this thing" (rename one topic).
+- `PUT` = "**replace** this thing completely with what I'm sending". We use it for reordering: the app sends the **whole** new order of the outline, not just one move.
+
+## "Add at the end": MAX(position) + 1
+
+`COALESCE((SELECT MAX(position) FROM topics WHERE course_id = ...), 0) + 1`: find the highest position in this course and add 1. For an empty outline `MAX` is `NULL`, `COALESCE` turns that into `0`, so the first topic gets position 1.
+
+## Row lock: SELECT … FOR UPDATE
+
+**Everyday example:** putting a "reserved" sign on a set of chairs while you rearrange them, so nobody sits down in the middle of it.
+
+`SELECT ... FOR UPDATE` inside a transaction **locks** those rows until the transaction ends. Anyone else trying to change them waits. In the reorder, it stops another request from adding or deleting a topic between our check ("is this the complete list?") and our update.
+
+Locks only last as long as the transaction, which is why this only makes sense inside `withTransaction()`.
+
+## unnest(...) WITH ORDINALITY
+
+Turns a list into rows, and numbers them:
+
+```sql
+SELECT * FROM unnest(ARRAY['c','a','b']) WITH ORDINALITY AS o(id, position);
+--  id | position
+--  c  | 1
+--  a  | 2
+--  b  | 3
+```
+
+The reorder joins these rows to `topics` by id and copies each number into `position`: **one UPDATE sets the whole new order.**
+
+## Set (JavaScript)
+
+A collection where each value appears only once. `new Set(list).size === list.length` is a quick way to check "no duplicates in this list", and `set.has(id)` checks membership quickly.

@@ -1,12 +1,5 @@
-import { createClient } from "@supabase/supabase-js";
 import { query } from "@/lib/db";
-
-// Used only to check login tokens. It keeps no session of its own, so one copy serves every request.
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-  { auth: { persistSession: false, autoRefreshToken: false } },
-);
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 // GET /api/v1/me: tells the Flutter app which teacher its login token belongs to.
 export async function GET(request: Request) {
@@ -16,6 +9,8 @@ export async function GET(request: Request) {
   if (!token) return errorResponse(401, "unauthorized", "Missing Authorization: Bearer token.");
 
   // 2. Check Supabase's signature on the token. claims.sub is the teacher's id.
+  //    Passing the token means cookies are ignored; only this token is checked.
+  const supabase = await createSupabaseServerClient();
   const { data } = await supabase.auth.getClaims(token);
   const teacherId = data?.claims.sub;
   if (!teacherId) return errorResponse(401, "unauthorized", "Invalid or expired token.");

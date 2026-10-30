@@ -1,13 +1,6 @@
-import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { query } from "@/lib/db";
-
-// Used only to check login tokens. It keeps no session of its own, so one copy serves every request.
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-  { auth: { persistSession: false, autoRefreshToken: false } },
-);
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 // What a valid "edit semester" body looks like. Every field is optional; send only what changes.
 const semesterChanges = z
@@ -83,6 +76,8 @@ async function getTeacherId(request: Request): Promise<string | null> {
   const header = request.headers.get("authorization") ?? "";
   const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
   if (!token) return null;
+  // Passing the token means cookies are ignored; only this token is checked.
+  const supabase = await createSupabaseServerClient();
   const { data } = await supabase.auth.getClaims(token);
   return data?.claims.sub ?? null;
 }

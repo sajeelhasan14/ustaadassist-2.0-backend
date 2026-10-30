@@ -43,6 +43,15 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `POST /api/v1/semesters` | body `{ name, startDate, endDate }` → `201 { semester }` |
 | `PATCH /api/v1/semesters/<id>` | body: any of `{ name, startDate, endDate }` → `{ semester }` |
 | `DELETE /api/v1/semesters/<id>` | `204`, deletes its courses too |
+| `GET /api/v1/semesters/<id>/courses` | `{ courses: [{ id, semesterId, code, title }] }`, by code; empty if the semester isn't yours |
+| `POST /api/v1/semesters/<id>/courses` | body `{ code, title }` → `201 { course }`; `404` if the semester isn't yours; `409` duplicate code |
+| `PATCH /api/v1/courses/<id>` | body: any of `{ code, title }` → `{ course }` |
+| `DELETE /api/v1/courses/<id>` | `204`, deletes its sections and topics too |
+| `GET /api/v1/courses/<id>/topics` | `{ topics: [{ id, title, position }] }`, in teaching order |
+| `POST /api/v1/courses/<id>/topics` | body `{ title }` → `201 { topic }`, added at the end |
+| `PUT /api/v1/courses/<id>/topics` | body `{ topicIds: [...] }` (every topic, new order) → `{ topics }` |
+| `PATCH /api/v1/topics/<id>` | body `{ title }` → `{ topic }` |
+| `DELETE /api/v1/topics/<id>` | `204`; the rest keep their order |
 
 - **Validation errors** (`400 invalid_input`) also include `fields`, e.g. `{ "endDate": ["End date must be on or after the start date."] }`, so the app can show each message next to its field.
 - **Dates** travel as text `"YYYY-MM-DD"` (selected with `::text` to avoid timezone shifts).
@@ -57,8 +66,14 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `app/api/v1/me/route.ts` | `GET /api/v1/me`: checks the Bearer token, returns the teacher | Flutter app (later), `curl` |
 | `app/api/v1/semesters/route.ts` | `GET` list + `POST` create semesters | Flutter app (later), PowerShell |
 | `app/api/v1/semesters/[id]/route.ts` | `PATCH` edit + `DELETE` one semester (`[id]` = the id in the URL) | Flutter app (later), PowerShell |
+| `app/api/v1/semesters/[id]/courses/route.ts` | `GET` list + `POST` add courses in one semester | Flutter app (later), PowerShell |
+| `app/api/v1/courses/[id]/route.ts` | `PATCH` edit + `DELETE` one course | Flutter app (later), PowerShell |
+| `docs/flows/courses.md` | Trace + test commands for the courses API | you |
+| `app/api/v1/courses/[id]/topics/route.ts` | `GET` outline, `POST` add at end, `PUT` reorder (first use of `withTransaction`) | Flutter app (later), PowerShell |
+| `app/api/v1/topics/[id]/route.ts` | `PATCH` rename + `DELETE` one topic | Flutter app (later), PowerShell |
+| `docs/flows/topics.md` | Trace + test commands for the topics API | you |
 | `docs/flows/semesters.md` | Trace + test commands for the semesters API | you |
-| `lib/supabase/server.ts` | `createSupabaseServerClient()`: a Supabase client that reads the login from cookies | server pages, server actions (login/signup in Step 0.4) |
+| `lib/supabase/server.ts` | `createSupabaseServerClient()`: **the one Supabase client**. Reads the login from cookies, or checks a Bearer token passed to `getClaims(token)` | pages, server actions, every API route (only `proxy.ts` has its own setup) |
 | `proxy.ts` | Runs before every page: refreshes the login, redirects logged-out users to `/login` | Next.js, automatically |
 | `lib/auth-actions.ts` | Server Actions `login`, `signup`, `logout` | the login/signup forms, the Log out button |
 | `app/login/page.tsx`, `app/signup/page.tsx` | The login and signup forms | browser |
