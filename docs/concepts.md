@@ -289,3 +289,54 @@ An index lets Postgres find rows by a column without scanning the whole table. P
 ## Savepoint
 
 A bookmark inside a transaction. `ROLLBACK TO SAVEPOINT s` undoes everything after the bookmark but keeps the transaction going. We used it to test several "this should fail" inserts in one transaction. In Postgres, once a statement fails, the transaction refuses every further command until you roll back, so the savepoint lets the test continue.
+
+---
+
+## REST (resource URLs + methods)
+
+A common way to lay out an API: the **URL names the thing**, the **method says what to do** with it.
+
+| | `/semesters` (the collection) | `/semesters/<id>` (one item) |
+|---|---|---|
+| `GET` | list them | (read one, not needed yet) |
+| `POST` | create a new one | |
+| `PATCH` | | change some fields |
+| `DELETE` | | delete it |
+
+## Dynamic route segment: `[id]`
+
+A folder name in square brackets is a **variable part of the URL**. `app/api/v1/semesters/[id]/route.ts` handles `/api/v1/semesters/abc-123`, `/api/v1/semesters/xyz-789`, and so on. Inside, `const { id } = await ctx.params` gives `"abc-123"`.
+
+## Input validation with Zod
+
+**Everyday example:** the receptionist who checks a form before it goes to the office, and hands it back with "you forgot to sign here".
+
+`z.object({ name: z.string().trim().min(1), startDate: z.iso.date() })` describes what valid input looks like. `schema.safeParse(body)` returns either `{ success: true, data }` (cleaned, e.g. trimmed) or `{ success: false, error }` with a message per field. `z.flattenError(error).fieldErrors` turns that into `{ "startDate": ["Use the format YYYY-MM-DD."] }`.
+
+- `.refine(fn, { message, path })`: a custom rule involving several fields (end date ≥ start date).
+- `.partial()`: makes every field optional (used for PATCH, where you only send what changes).
+
+## RETURNING
+
+`INSERT ... RETURNING id, name` / `UPDATE ... RETURNING ...` / `DELETE ... RETURNING id` make Postgres give back the affected rows. One query both changes the data **and** tells us the result. An **empty result means no row matched**, which is how we detect "not found / not yours".
+
+## COALESCE in an UPDATE (partial updates)
+
+`SET name = COALESCE($1, name)`: if `$1` is `NULL` (field not sent), keep the current `name`; otherwise use the new value. That's how one `UPDATE` handles "change only the fields that were sent".
+
+## Postgres error codes
+
+When Postgres refuses something, the error has a 5-character `code`:
+- `23505`: a `unique` rule was broken (duplicate) → we answer `409`.
+- `23514`: a `check` rule was broken → we answer `400`.
+- `23503`: a foreign key was broken (points at something that doesn't exist).
+
+## More HTTP status codes
+
+- `201 Created`: a new item was made (POST).
+- `204 No Content`: done, nothing to send back (DELETE).
+- `409 Conflict`: the request clashes with existing data (duplicate name).
+
+## The `date` timezone trap
+
+`pg` turns a Postgres `date` like `2026-09-01` into a JavaScript `Date` at **midnight in the server's timezone**. Sent as JSON, that becomes UTC, e.g. `2026-08-31T19:00:00.000Z` on a Pakistan server: **the wrong day**. Selecting `start_date::text` makes Postgres send the plain text `"2026-09-01"`, so no conversion happens.

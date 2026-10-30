@@ -39,6 +39,14 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | Endpoint | Returns |
 |---|---|
 | `GET /api/v1/me` | `{ teacher: { id, fullName, email, createdAt } }` |
+| `GET /api/v1/semesters` | `{ semesters: [{ id, name, startDate, endDate }] }`, newest first |
+| `POST /api/v1/semesters` | body `{ name, startDate, endDate }` → `201 { semester }` |
+| `PATCH /api/v1/semesters/<id>` | body: any of `{ name, startDate, endDate }` → `{ semester }` |
+| `DELETE /api/v1/semesters/<id>` | `204`, deletes its courses too |
+
+- **Validation errors** (`400 invalid_input`) also include `fields`, e.g. `{ "endDate": ["End date must be on or after the start date."] }`, so the app can show each message next to its field.
+- **Dates** travel as text `"YYYY-MM-DD"` (selected with `::text` to avoid timezone shifts).
+- **Someone else's id** gets the same `404` as a missing id, so ids can't be probed.
 
 ## Folders and files
 
@@ -47,6 +55,9 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `app/` | Next.js pages (dashboard) and API routes (`app/api/v1`) | browser, Flutter |
 | `lib/db.ts` | Database connection pool, `query()` and `withTransaction()` | every page and API route that reads data |
 | `app/api/v1/me/route.ts` | `GET /api/v1/me`: checks the Bearer token, returns the teacher | Flutter app (later), `curl` |
+| `app/api/v1/semesters/route.ts` | `GET` list + `POST` create semesters | Flutter app (later), PowerShell |
+| `app/api/v1/semesters/[id]/route.ts` | `PATCH` edit + `DELETE` one semester (`[id]` = the id in the URL) | Flutter app (later), PowerShell |
+| `docs/flows/semesters.md` | Trace + test commands for the semesters API | you |
 | `lib/supabase/server.ts` | `createSupabaseServerClient()`: a Supabase client that reads the login from cookies | server pages, server actions (login/signup in Step 0.4) |
 | `proxy.ts` | Runs before every page: refreshes the login, redirects logged-out users to `/login` | Next.js, automatically |
 | `lib/auth-actions.ts` | Server Actions `login`, `signup`, `logout` | the login/signup forms, the Log out button |
@@ -101,5 +112,7 @@ One-time setup on a new computer: `npx supabase login`, then `npx supabase link 
 | All data goes through Next.js | Calculations and permission checks happen on our server, never in the app or browser. |
 | Logic inside each route/page file, no service layer | Fewer files; each file reads top to bottom. If the same code gets copied into many files, we decide together whether to share it. |
 | A course can have many sections | Real courses are taught to several class groups. |
-| Per-course grading weights and bands | Courses differ (labs, quiz counts); the teacher enters raw marks, the server calculates. |
+| Marks split is fully up to the teacher | Each course has a total (default 100). The teacher creates any assessments, any number, each worth any marks they choose; nothing is fixed. A student's total is the sum of the marks they got. Grades come from the university's table. |
+| Built for one university | Final results are exported in that university's exact format. |
+| Teacher types as little as possible | The app pre-fills, imports (CSV or PDF scan) and calculates; the teacher only confirms and enters marks. |
 | Individual teacher accounts | No school/admin level for now. |
