@@ -29,6 +29,7 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/semesters
 }
 
 // POST /api/v1/semesters/<id>/courses: add a course to a semester. Body: { code, title }
+// Every new course also gets section "A", so most teachers never have to set up sections.
 export async function POST(request: Request, ctx: RouteContext<"/api/v1/semesters/[id]/courses">) {
   const teacherId = await getTeacherId(request);
   if (!teacherId) return errorResponse(401, "unauthorized", "Missing or invalid login token.");
@@ -43,15 +44,26 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/semester
   const { code, title } = parsed.data;
 
   try {
-    // INSERT ... SELECT ... WHERE: the row is only inserted if the semester belongs to this teacher.
-    const [course] = await query(
-      `INSERT INTO courses (semester_id, code, title)
-       SELECT id, $2, $3 FROM semesters WHERE id = $1 AND teacher_id = $4
-       RETURNING id, semester_id AS "semesterId", code, title`,
+    // One statement, two inserts (a CTE): the course and its section "A" are saved together or not at all.
+    // INSERT ... SELECT ... WHERE: the course is only inserted if the semester belongs to this teacher;
+    // if it isn't, new_course is empty, so no section is inserted either.
+    const [created] = await query(
+      `WITH new_course AS (
+         INSERT INTO courses (semester_id, code, title)
+         SELECT id, $2, $3 FROM semesters WHERE id = $1 AND teacher_id = $4
+         RETURNING id, semester_id, code, title
+       ), new_section AS (
+         INSERT INTO sections (course_id, name)
+         SELECT id, 'A' FROM new_course
+         RETURNING id, course_id, name
+       )
+       SELECT json_build_object('id', c.id, 'semesterId', c.semester_id, 'code', c.code, 'title', c.title) AS course,
+              json_build_object('id', s.id, 'courseId', s.course_id, 'name', s.name) AS section
+         FROM new_course c JOIN new_section s ON s.course_id = c.id`,
       [semesterId, code, title, teacherId],
     );
-    if (!course) return errorResponse(404, "not_found", "Semester not found.");
-    return Response.json({ course }, { status: 201 });
+    if (!created) return errorResponse(404, "not_found", "Semester not found.");
+    return Response.json(created, { status: 201 });
   } catch (error) {
     // 23505 = unique rule broken: this semester already has a course with this code.
     if ((error as { code?: string }).code === "23505") {

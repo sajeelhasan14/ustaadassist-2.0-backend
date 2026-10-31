@@ -14,7 +14,7 @@ POST /api/v1/semesters/<semesterId>/courses   { "code": "CS-201", "title": "Data
       no row inserted (not your semester) → 404
       23505 (code already used in this semester) → 409
    ▼
-201 { "course": { "id", "semesterId", "code", "title" } }
+201 { "course": { "id", "semesterId", "code", "title" }, "section": { ..., "name": "A" } }   ← section "A" is auto-created, see sections.md
 ```
 
 ## Tested (rolled-back transaction, temporary teachers A and B)

@@ -393,3 +393,58 @@ The reorder joins these rows to `topics` by id and copies each number into `posi
 ## Set (JavaScript)
 
 A collection where each value appears only once. `new Set(list).size === list.length` is a quick way to check "no duplicates in this list", and `set.has(id)` checks membership quickly.
+
+## CTE: several inserts in one statement (`WITH ... AS (INSERT ...)`)
+
+A **CTE** (Common Table Expression) is a named step inside one SQL statement. `WITH new_course AS (...)` runs the part in brackets and lets later parts read its result like a table. In Postgres that step can even be an `INSERT ... RETURNING`.
+
+We use it to create a course **and** its section "A" together:
+
+```sql
+WITH new_course  AS (INSERT INTO courses ... RETURNING id, ...),
+     new_section AS (INSERT INTO sections (course_id, name) SELECT id, 'A' FROM new_course RETURNING ...)
+SELECT ... FROM new_course JOIN new_section ...
+```
+
+One statement is always all-or-nothing, so this needs no transaction. If the semester isn't yours, `new_course` is empty, so `new_section` inserts nothing too.
+
+**Everyday example:** an admission form with a tear-off slip. The office accepts the whole form or rejects it; you never get the slip without the form.
+
+**When a transaction is still needed:** when step 2 depends on JavaScript logic or a check in between. Then we use `withTransaction` (as in the topics reorder).
+
+## LEFT JOIN, COUNT and GROUP BY
+
+- `JOIN` keeps only rows with a match on both sides, so a section with no students would disappear.
+- `LEFT JOIN enrollments` keeps **every** section. Where there are no students, the enrollment columns are empty (NULL).
+- `GROUP BY sec.id` folds all the enrollment rows of one section into one result row, and `COUNT(e.student_id)` counts them. COUNT skips NULLs, so an empty section gives 0.
+- `::int` turns the count into a normal number. Postgres counts are `bigint`, which `pg` returns as text (`"65"`).
+
+**Everyday example:** listing every classroom with its headcount, including empty rooms (0), not only rooms that have someone in them.
+
+## json_build_object
+
+Builds a JSON object inside SQL: `json_build_object('id', c.id, 'code', c.code)` gives `{"id": "...", "code": "..."}`. We use it so one result row can carry two separate objects (`course` and `section`), and the route returns that row as-is.
+
+## Find-or-create and `ON CONFLICT DO NOTHING`
+
+**Find-or-create:** "use this student if they already exist, otherwise make them". We need it because one student can be in several of your sections but must exist only once.
+
+`INSERT ... ON CONFLICT (teacher_id, roll_number) DO NOTHING RETURNING ...` tries to insert. If the unique rule would be broken, Postgres quietly inserts nothing and returns **no row**, instead of throwing error 23505. So:
+- a row came back → it's a new student
+- no row → the seat number is taken, so we `SELECT` the existing student
+
+Trying the INSERT first (instead of SELECT first, then INSERT) is safe even if two requests arrive at the same moment: only one insert can win, and the other sees "no row".
+
+**Everyday example:** handing in a library membership form. If you're already a member, the desk doesn't make a second card; they just look up your existing one.
+
+## Zod transforms: cleaning input, not just checking it
+
+- `.transform(fn)` changes the value after it passes: `v.trim().replace(/\s+/g, " ")` turns `"ABDUL   GHANI "` into `"ABDUL GHANI"`, and `.toUpperCase()` makes seat numbers capitals.
+- `.pipe(z.string().min(1))` checks the **cleaned** value, so `"   "` counts as empty.
+- `.nullish()` means the field may be missing (`undefined`) or `null`.
+
+Cleaning in one place means the database never holds `"eb24…"` and `"EB24…"` as two different students.
+
+## Adding a column to an existing table
+
+`alter table public.students add column father_name text;` adds a column to a table that already has rows. Existing rows get `NULL` (empty) for it, which is why a new column that must start empty can't be `not null` without a default. It went in a **new** migration file, because pushed migrations are never edited.
