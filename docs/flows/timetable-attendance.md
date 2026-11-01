@@ -83,7 +83,7 @@ GET /api/v1/sessions/<id>/attendance
    → { "marked": false, "students": [ { id, rollNumber, fullName, present: true } ] }
      Not marked yet → everyone is suggested present (COALESCE(a.present, true)).
 
-PUT /api/v1/sessions/<id>/attendance   { "absent": ["<studentId>", ...] }
+PUT /api/v1/sessions/<id>/attendance   { "absent": ["<studentId>", ...], "topicIds": ["<topicId>"] }   ← topicIds: what was taught (planner), optional
  1. token → 401;  Zod: absent = list of UUIDs → 400
  2. transaction:
       class yours? (SELECT … FOR UPDATE: two saves at once wait in line)  → 404
@@ -94,6 +94,8 @@ PUT /api/v1/sessions/<id>/attendance   { "absent": ["<studentId>", ...] }
    ▼
 200 { "present": 2, "absent": 1 }
 ```
+
+`topicIds` left out → the topics saved before are kept; `[]` → none; a topic of another course → 400. `GET …/attendance` also returns `"topics"` (what was saved for this class). Details: [planner.md](planner.md).
 
 Saving again replaces the marks, so fixing a mistake is the same call.
 

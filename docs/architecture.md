@@ -96,11 +96,12 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `app/api/v1/off-days/[id]/route.ts` | `PATCH` rename / move / shift / confirm + `DELETE` (public holidays are only hidden) | Flutter app (later), PowerShell |
 | `docs/flows/off-days.md` | Trace + test commands for holidays and off days | you |
 | `app/api/v1/sections/[id]/timetable/route.ts` | `GET` + `PUT` (replace the whole week) a section's weekly classes | Flutter app (later), PowerShell |
-| `app/api/v1/sections/[id]/sessions/route.ts` | `GET` the whole semester's classes, worked out from timetable − off days + stored classes; `POST` find-or-create one class (cancel, extra class, or get an id for attendance) | Flutter app (later), PowerShell |
+| `app/api/v1/sections/[id]/sessions/route.ts` | `GET` the whole semester's classes, worked out from timetable − off days + stored classes, **plus the teaching plan** (topics placed onto upcoming classes, "short by N classes"); `POST` find-or-create one class (cancel, extra class, or get an id for attendance) | Flutter app (later), PowerShell |
 | `app/api/v1/sessions/[id]/route.ts` | `PATCH` cancel / un-cancel / note + `DELETE` forget a stored class | Flutter app (later), PowerShell |
-| `app/api/v1/sessions/[id]/attendance/route.ts` | `GET` roster with marks (everyone present if not marked yet) + `PUT { absent: [...] }` | Flutter app (later), PowerShell |
+| `app/api/v1/sessions/[id]/attendance/route.ts` | `GET` roster with marks (everyone present if not marked yet) + saved topics; `PUT { absent: [...], topicIds?: [...] }` | Flutter app (later), PowerShell |
 | `app/api/v1/sections/[id]/attendance/route.ts` | `GET` each student's present / marked / % / shortage | Flutter app (later), PowerShell |
 | `docs/flows/timetable-attendance.md` | Trace + test commands for timetable, class calendar and attendance | you |
+| `docs/flows/planner.md` | How the teaching plan is worked out (inside `GET /sections/<id>/sessions`) and how taught topics are recorded | you |
 | `lib/supabase/server.ts` | `createSupabaseServerClient()`: **the one Supabase client**. Reads the login from cookies, or checks a Bearer token passed to `getClaims(token)` | pages, server actions, every API route (only `proxy.ts` has its own setup) |
 | `proxy.ts` | Runs before every page: refreshes the login, redirects logged-out users to `/login` | Next.js, automatically |
 | `lib/auth-actions.ts` | Server Actions `login`, `signup`, `logout` | the login/signup forms, the Log out button |
@@ -120,13 +121,14 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `public.teachers` | teacher | trigger `on_auth_user_created`, at signup | `id` = the login's id. RLS on. |
 | `public.semesters` | teaching term ("Fall 2026") | API (Step 1.2) | belongs to a teacher; `end_date >= start_date`; name unique per teacher |
 | `public.courses` | subject in one semester ("CS-101") | API (Step 1.3) | belongs to a semester; code unique per semester |
-| `public.topics` | outline item | API (Step 1.3) | belongs to a course; `position` = teaching order |
+| `public.topics` | outline item | API (Step 1.3) | belongs to a course; `position` = teaching order; `classes_needed` (default 1) for the planner |
 | `public.sections` | class group ("A") | API (Step 1.5a); "A" auto-created with each course | belongs to a course; name unique per course |
 | `public.students` | student | API (Step 1.5b) / import (Step 1.6) | belongs to a teacher; roll number (= "Seat No") unique per teacher, stored in capitals; optional `father_name` |
 | `public.enrollments` | student in a section | API (Step 1.5b) | links sections ↔ students (many-to-many) |
 | `public.off_days` | holiday or day off (one day or a range) | `GET /off-days` / `GET /sections/<id>/sessions` (public holidays, automatically) / API (teacher's own) | belongs to a teacher, applies to all their sections; `holiday_key` (pre-filled only, unique per teacher), `tentative` (Islamic dates until confirmed), `removed` (deleted public holiday, kept hidden) |
 | `public.timetable_slots` | weekly class ("Mon 09:00–10:30") | API (Step 2.2) | belongs to a section; `weekday` 1 = Monday … 7 = Sunday |
 | `public.class_sessions` | class worth remembering: held, cancelled or extra | API (Step 2.3) | belongs to a section; unique per section + date + start time. **Ordinary future classes are not stored**, they are worked out |
+| `public.session_topics` | topic taught in a class | attendance `PUT` with `topicIds` (Step 3.1) | links class_sessions ↔ topics (one class can cover 2 topics; one topic can take several classes) |
 | `public.attendance` | one student's mark at one held class | API (Step 2.4) | `present` true/false; replaced as a whole each time the class is saved |
 
 How they connect (`──<` means "one to many"):
@@ -137,6 +139,7 @@ teachers ──< semesters ──< courses ──< sections >──┐
     │                         └──< topics │  │      │
     │                                     │  └──< timetable_slots
     │                                     └──< class_sessions ──< attendance >──┐
+    │                                            └──< session_topics >── topics
     ├──< students >───────────────────────────────────────────────┴─────────────┘
     └──< off_days
 ```
@@ -169,4 +172,6 @@ One-time setup on a new computer: `npx supabase login`, then `npx supabase link 
 | Ordinary classes are worked out, not stored | The calendar = timetable × semester days − off days, recalculated on every request. Only held / cancelled / extra classes are rows. Changing the timetable, a holiday or the semester dates re-plans every future class instantly, with nothing to regenerate or get out of sync. |
 | Public holidays are pre-filled | Fixed national days + Islamic days (Umm al-Qura, marked tentative). The teacher confirms or shifts with one tap and never types a holiday. A deleted one is hidden, not re-added. |
 | Attendance: send only the absent | Everyone is present by default, so a class takes a few taps. % = present ÷ classes the student was marked in; shortage below 75% (changeable per request with `?min=`). |
+| The plan is worked out, not stored | Inside the calendar `GET`: unfinished topics (in outline order, each as many times as classes it still needs) are handed to the upcoming classes one by one. A cancelled class, shifted holiday or reordered outline changes the plan on the next request. |
+| What was taught is recorded on the attendance screen | The app pre-fills `plan.nextTopic`; the teacher just saves. Chosen by the user for less effort (2026-11-02); can move to the planner screen later without changing the database. |
 | Times are Karachi time | "Today" (for "class hasn't happened yet" and the calendar summary) uses `Asia/Karachi`, the university's timezone. |

@@ -2,11 +2,15 @@ import { z } from "zod";
 import { query } from "@/lib/db";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-const topicChanges = z.object({
-  title: z.string().trim().min(1, "Title can't be empty."),
-});
+// Every field is optional; send only what changes. classesNeeded = how many classes the topic takes (planner).
+const topicChanges = z
+  .object({
+    title: z.string().trim().min(1, "Title can't be empty."),
+    classesNeeded: z.int().min(1).max(50),
+  })
+  .partial();
 
-// PATCH /api/v1/topics/<id>: rename a topic. Body: { title }
+// PATCH /api/v1/topics/<id>: rename a topic and/or change how many classes it takes. Body: { title?, classesNeeded? }
 export async function PATCH(request: Request, ctx: RouteContext<"/api/v1/topics/[id]">) {
   const teacherId = await getTeacherId(request);
   if (!teacherId) return errorResponse(401, "unauthorized", "Missing or invalid login token.");
@@ -22,12 +26,13 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/v1/topics/
   // topic → course → semester → teacher: only changes the topic if it belongs to this teacher.
   const [topic] = await query(
     `UPDATE topics t
-        SET title = $1
+        SET title = COALESCE($1, t.title),
+            classes_needed = COALESCE($4, t.classes_needed)
        FROM courses c
        JOIN semesters s ON s.id = c.semester_id
       WHERE t.id = $2 AND c.id = t.course_id AND s.teacher_id = $3
-      RETURNING t.id, t.title, t.position`,
-    [parsed.data.title, id, teacherId],
+      RETURNING t.id, t.title, t.position, t.classes_needed AS "classesNeeded"`,
+    [parsed.data.title ?? null, id, teacherId, parsed.data.classesNeeded ?? null],
   );
   if (!topic) return notFound();
   return Response.json({ topic });

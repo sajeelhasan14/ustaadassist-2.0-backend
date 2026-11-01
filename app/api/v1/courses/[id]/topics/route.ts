@@ -2,8 +2,10 @@ import { z } from "zod";
 import { query, withTransaction } from "@/lib/db";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+// classesNeeded: how many classes the topic takes (default 1). The planner uses it.
 const newTopic = z.object({
   title: z.string().trim().min(1, "Title is required."),
+  classesNeeded: z.int().min(1).max(50).default(1),
 });
 
 // The complete outline in its new order: every topic id of the course, each exactly once.
@@ -21,7 +23,7 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/courses/[
 
   // topic → course → semester → teacher: the joins are the ownership check.
   const topics = await query(
-    `SELECT t.id, t.title, t.position
+    `SELECT t.id, t.title, t.position, t.classes_needed AS "classesNeeded"
        FROM topics t
        JOIN courses c ON c.id = t.course_id
        JOIN semesters s ON s.id = c.semester_id
@@ -32,7 +34,7 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/courses/[
   return Response.json({ topics });
 }
 
-// POST /api/v1/courses/<id>/topics: add a topic at the end of the outline. Body: { title }
+// POST /api/v1/courses/<id>/topics: add a topic at the end of the outline. Body: { title, classesNeeded? }
 export async function POST(request: Request, ctx: RouteContext<"/api/v1/courses/[id]/topics">) {
   const teacherId = await getTeacherId(request);
   if (!teacherId) return errorResponse(401, "unauthorized", "Missing or invalid login token.");
@@ -47,13 +49,13 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/courses/
 
   // Inserted only if the course belongs to this teacher; position = last position + 1 (or 1 if empty).
   const [topic] = await query(
-    `INSERT INTO topics (course_id, title, position)
-     SELECT c.id, $2, COALESCE((SELECT MAX(position) FROM topics WHERE course_id = c.id), 0) + 1
+    `INSERT INTO topics (course_id, title, position, classes_needed)
+     SELECT c.id, $2, COALESCE((SELECT MAX(position) FROM topics WHERE course_id = c.id), 0) + 1, $4
        FROM courses c
        JOIN semesters s ON s.id = c.semester_id
       WHERE c.id = $1 AND s.teacher_id = $3
-     RETURNING id, title, position`,
-    [courseId, parsed.data.title, teacherId],
+     RETURNING id, title, position, classes_needed AS "classesNeeded"`,
+    [courseId, parsed.data.title, teacherId, parsed.data.classesNeeded],
   );
   if (!topic) return courseNotFound();
   return Response.json({ topic }, { status: 201 });
@@ -113,7 +115,7 @@ export async function PUT(request: Request, ctx: RouteContext<"/api/v1/courses/[
   }
 
   const topics = await query(
-    "SELECT id, title, position FROM topics WHERE course_id = $1 ORDER BY position",
+    `SELECT id, title, position, classes_needed AS "classesNeeded" FROM topics WHERE course_id = $1 ORDER BY position`,
     [courseId],
   );
   return Response.json({ topics });

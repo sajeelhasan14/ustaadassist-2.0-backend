@@ -3,8 +3,10 @@ import { query, withTransaction } from "@/lib/db";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 // Only the absent students are sent: everyone else in the section is present. Most classes need 0–5 taps.
+// topicIds = what was taught (the app pre-fills it from the plan). Left out = keep what was saved before; [] = none.
 const attendanceBody = z.object({
   absent: z.array(z.uuid("Not a valid student id.")).max(500),
+  topicIds: z.array(z.uuid("Not a valid topic id.")).max(10).optional(),
 });
 
 // GET /api/v1/sessions/<id>/attendance: the section's students with their mark for this class.
@@ -37,11 +39,18 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/sessions/
       ORDER BY st.roll_number`,
     [sessionId, session.sectionId],
   );
-  return Response.json({ marked: session.status === "held", students });
+  // What was saved as taught in this class. Empty for a class not marked yet: the app then pre-fills plan.nextTopic
+  // from GET /sections/<id>/sessions.
+  const topics = await query(
+    `SELECT t.id, t.title FROM session_topics st JOIN topics t ON t.id = st.topic_id
+      WHERE st.session_id = $1 ORDER BY t.position`,
+    [sessionId],
+  );
+  return Response.json({ marked: session.status === "held", topics, students });
 }
 
-// PUT /api/v1/sessions/<id>/attendance: save this class's attendance. Body: { absent: [studentId, ...] }
-// Replaces any earlier marks for the class, and the class becomes "held".
+// PUT /api/v1/sessions/<id>/attendance: save this class's attendance. Body: { absent: [studentId, ...], topicIds?: [...] }
+// Replaces any earlier marks (and topics, if sent) for the class, and the class becomes "held".
 export async function PUT(request: Request, ctx: RouteContext<"/api/v1/sessions/[id]/attendance">) {
   const teacherId = await getTeacherId(request);
   if (!teacherId) return errorResponse(401, "unauthorized", "Missing or invalid login token.");
@@ -54,6 +63,7 @@ export async function PUT(request: Request, ctx: RouteContext<"/api/v1/sessions/
     return errorResponse(400, "invalid_input", "Some fields are invalid.", z.flattenError(parsed.error).fieldErrors);
   }
   const absent = [...new Set(parsed.data.absent)];
+  const topicIds = parsed.data.topicIds && [...new Set(parsed.data.topicIds)];
 
   // "Today" at the university (Karachi), as YYYY-MM-DD. en-CA happens to format dates that way.
   const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi" }).format(new Date());
@@ -84,6 +94,21 @@ export async function PUT(request: Request, ctx: RouteContext<"/api/v1/sessions/
     const unknown = absent.filter((studentId) => !enrolledIds.has(studentId));
     if (unknown.length > 0) return { outcome: "unknown_students", unknown } as const;
 
+    // Topics must belong to this section's course. Then replace what was saved as taught.
+    if (topicIds) {
+      const ofCourse = await client.query(
+        `SELECT t.id FROM topics t JOIN sections sec ON sec.course_id = t.course_id
+          WHERE sec.id = $1 AND t.id = ANY($2::uuid[])`,
+        [found.sectionId, topicIds],
+      );
+      if (ofCourse.rowCount !== topicIds.length) return { outcome: "unknown_topics" } as const;
+      await client.query("DELETE FROM session_topics WHERE session_id = $1", [sessionId]);
+      await client.query(
+        `INSERT INTO session_topics (session_id, topic_id) SELECT $1, unnest($2::uuid[])`,
+        [sessionId, topicIds],
+      );
+    }
+
     // Replace the old marks: one row per enrolled student, present unless their id is in the absent list.
     await client.query("DELETE FROM attendance WHERE session_id = $1", [sessionId]);
     await client.query(
@@ -100,6 +125,9 @@ export async function PUT(request: Request, ctx: RouteContext<"/api/v1/sessions/
   if (result.outcome === "future") return errorResponse(400, "future_class", "This class hasn't happened yet.");
   if (result.outcome === "unknown_students") {
     return errorResponse(400, "invalid_input", "Some absent students aren't in this section.", { absent: result.unknown });
+  }
+  if (result.outcome === "unknown_topics") {
+    return errorResponse(400, "invalid_input", "Some topics aren't in this course.", { topicIds: ["Use topics of this section's course."] });
   }
   return Response.json({ present: result.present, absent: result.absent });
 }

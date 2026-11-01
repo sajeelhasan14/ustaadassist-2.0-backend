@@ -5,6 +5,8 @@ Files: [app/api/v1/courses/[id]/topics/route.ts](../../app/api/v1/courses/[id]/t
 
 Ownership goes two levels up: **topic → course → semester → teacher** (two JOINs in every query).
 
+**Planner (Phase 3):** every topic also has `classesNeeded` (default 1): how many classes it takes. Send it when adding (`{ "title": "Trees", "classesNeeded": 3 }`) or change it with `PATCH /topics/<id> { "classesNeeded": 3 }`. Every topic response includes it. See [planner.md](planner.md).
+
 ## Add: `POST /api/v1/courses/<id>/topics`  `{ "title": "Linked Lists" }`
 
 token → UUID → Zod → `INSERT ... SELECT ... position = MAX(position) + 1 ... WHERE the course's semester is yours` → `201 { topic }` (or 404).

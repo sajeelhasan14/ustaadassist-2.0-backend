@@ -20,12 +20,15 @@ type StoredSession = {
   id: string; date: string; startTime: string; endTime: string; status: string; extra: boolean; note: string | null;
   present: number; absent: number;
 };
+type Topic = { id: string; title: string; position: number; classesNeeded: number; classesTaught: number };
+type SessionTopic = { id: string; title: string };
 
 const sessionColumns = `id, date::text AS date, to_char(start_time, 'HH24:MI') AS "startTime", to_char(end_time, 'HH24:MI') AS "endTime",
   status, extra, note`;
 
-// GET /api/v1/sections/<id>/sessions: every class of the semester, in order, with a summary.
+// GET /api/v1/sections/<id>/sessions: every class of the semester, in order, with a summary and the teaching plan.
 // Worked out from the timetable, the semester dates and the off days; held, cancelled and extra classes come from class_sessions.
+// The plan places the topics not yet finished onto the upcoming classes, in outline order. Nothing about it is stored.
 export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/[id]/sessions">) {
   const teacherId = await getTeacherId(request);
   if (!teacherId) return errorResponse(401, "unauthorized", "Missing or invalid login token.");
@@ -33,8 +36,8 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/
   const { id: sectionId } = await ctx.params;
   if (!z.uuid().safeParse(sectionId).success) return sectionNotFound();
 
-  const [semester] = await query<{ startDate: string; endDate: string }>(
-    `SELECT s.start_date::text AS "startDate", s.end_date::text AS "endDate"
+  const [semester] = await query<{ courseId: string; startDate: string; endDate: string }>(
+    `SELECT c.id AS "courseId", s.start_date::text AS "startDate", s.end_date::text AS "endDate"
        FROM sections sec
        JOIN courses c ON c.id = sec.course_id
        JOIN semesters s ON s.id = c.semester_id
@@ -83,14 +86,40 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/
   );
   const storedByTime = new Map(stored.map((session) => [`${session.date} ${session.startTime}`, session]));
 
+  // The course outline, with how many HELD classes of this section taught each topic.
+  const topics = await query<Topic>(
+    `SELECT t.id, t.title, t.position, t.classes_needed AS "classesNeeded", count(cs.id)::int AS "classesTaught"
+       FROM topics t
+       LEFT JOIN (session_topics st JOIN class_sessions cs ON cs.id = st.session_id AND cs.status = 'held' AND cs.section_id = $2)
+              ON st.topic_id = t.id
+      WHERE t.course_id = $1
+      GROUP BY t.id
+      ORDER BY t.position`,
+    [semester.courseId, sectionId],
+  );
+  // What each stored class taught, to show on held classes.
+  const taughtRows = await query<SessionTopic & { sessionId: string }>(
+    `SELECT st.session_id AS "sessionId", t.id, t.title
+       FROM session_topics st
+       JOIN topics t ON t.id = st.topic_id
+       JOIN class_sessions cs ON cs.id = st.session_id
+      WHERE cs.section_id = $1
+      ORDER BY t.position`,
+    [sectionId],
+  );
+  const taughtBySession = new Map<string, SessionTopic[]>();
+  for (const { sessionId, id, title } of taughtRows) {
+    taughtBySession.set(sessionId, [...(taughtBySession.get(sessionId) ?? []), { id, title }]);
+  }
+
   // Walk the semester day by day. getUTCDay() is 0 for Sunday; we number days 1 = Monday … 7 = Sunday.
-  const sessions = [];
+  const sessions: (Omit<StoredSession, "id"> & { id: string | null; offDayName: string | null; topics: SessionTopic[] })[] = [];
   for (let date = semester.startDate; date <= semester.endDate; date = addDays(date, 1)) {
     const weekday = new Date(`${date}T00:00:00Z`).getUTCDay() || 7;
     for (const slot of slots.filter((slot) => slot.weekday === weekday)) {
       const saved = storedByTime.get(`${date} ${slot.startTime}`);
       if (saved) {
-        sessions.push({ ...saved, offDayName: null });
+        sessions.push({ ...saved, offDayName: null, topics: taughtBySession.get(saved.id) ?? [] });
         storedByTime.delete(`${date} ${slot.startTime}`);
         continue;
       }
@@ -98,12 +127,12 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/
       sessions.push({
         id: null, date, startTime: slot.startTime, endTime: slot.endTime,
         status: offDay ? "off_day" : "planned", extra: false, note: null, present: 0, absent: 0,
-        offDayName: offDay?.name ?? null,
+        offDayName: offDay?.name ?? null, topics: [],
       });
     }
   }
   // What's left: extra classes, and stored classes whose timetable slot was later removed.
-  for (const saved of storedByTime.values()) sessions.push({ ...saved, offDayName: null });
+  for (const saved of storedByTime.values()) sessions.push({ ...saved, offDayName: null, topics: taughtBySession.get(saved.id) ?? [] });
   sessions.sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
 
   // "Today" at the university (Karachi), as YYYY-MM-DD. en-CA happens to format dates that way.
@@ -115,7 +144,42 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/
     notMarked: sessions.filter((session) => session.status === "planned" && session.date < today).length,
     remaining: sessions.filter((session) => session.status === "planned" && session.date >= today).length,
   };
-  return Response.json({ today, summary, sessions });
+
+  // ── The plan. A topic is done when it was taught in as many classes as it needs, or when it was started and a
+  // later topic has been taught too (the teacher moved on early). A topic never taught stays in the plan.
+  const lastTaughtPosition = Math.max(0, ...topics.filter((topic) => topic.classesTaught > 0).map((topic) => topic.position));
+  const planTopics = topics.map((topic) => {
+    const done = topic.classesTaught >= topic.classesNeeded || (topic.classesTaught > 0 && topic.position < lastTaughtPosition);
+    return {
+      ...topic,
+      status: done ? "done" : topic.classesTaught > 0 ? "in_progress" : "not_started",
+      classesLeft: done ? 0 : topic.classesNeeded - topic.classesTaught,
+      plannedDates: [] as string[],
+    };
+  });
+  // One entry per class still needed, in outline order: a topic needing 2 more classes appears twice.
+  const queue = planTopics.flatMap((topic) => Array<typeof topic>(topic.classesLeft).fill(topic));
+  // Hand them out to the upcoming classes, one each.
+  const upcoming = sessions.filter((session) => session.status === "planned" && session.date >= today);
+  upcoming.forEach((session, index) => {
+    const topic = queue[index];
+    if (!topic) return;
+    session.topics = [{ id: topic.id, title: topic.title }];
+    topic.plannedDates.push(session.date);
+  });
+
+  const plan = {
+    // What the attendance screen pre-fills for the class being marked.
+    nextTopic: queue[0] ? { id: queue[0].id, title: queue[0].title } : null,
+    topicsDone: planTopics.filter((topic) => topic.status === "done").length,
+    topicsLeft: planTopics.filter((topic) => topic.status !== "done").length,
+    classesNeeded: queue.length,
+    classesAvailable: upcoming.length,
+    // More classes needed than left → the teacher should add this many extra classes.
+    classesShort: Math.max(0, queue.length - upcoming.length),
+    topics: planTopics,
+  };
+  return Response.json({ today, summary, plan, sessions });
 }
 
 // POST /api/v1/sections/<id>/sessions: find or create the stored class at this date and time.
