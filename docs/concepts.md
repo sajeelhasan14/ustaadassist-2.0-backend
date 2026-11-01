@@ -390,6 +390,26 @@ SELECT * FROM unnest(ARRAY['c','a','b']) WITH ORDINALITY AS o(id, position);
 
 The reorder joins these rows to `topics` by id and copies each number into `position`: **one UPDATE sets the whole new order.**
 
+## Bulk insert: unnest with several lists
+
+`unnest` can take **several lists at once** and zip them into rows, like the columns of a table:
+
+```sql
+SELECT * FROM unnest(ARRAY['EB…003','EB…005'], ARRAY['ABDUL GHANI','NASIR AKHTAR'], ARRAY['MUHAMMAD AFZAL', NULL])
+         AS list(roll_number, full_name, father_name);
+--  roll_number | full_name    | father_name
+--  EB…003      | ABDUL GHANI  | MUHAMMAD AFZAL
+--  EB…005      | NASIR AKHTAR | NULL
+```
+
+Put `INSERT INTO students (...) SELECT ... FROM unnest(...)` in front and **one statement inserts the whole class**. The app sends three lists (`$2::text[]`, `$3::text[]`, `$4::text[]`), not 60 separate INSERTs. Item 1 of each list makes row 1, and so on.
+
+**Everyday example:** instead of walking to the office 60 times with one form each, you hand in one stack.
+
+## `= ANY($1::text[])`: "is in this list"
+
+`WHERE roll_number = ANY($1::text[])` means "the seat number is one of these". It's the same as `IN ('a', 'b', 'c')`, but the whole list goes in as **one parameter**, so it stays safe from SQL injection however long the list is. `::text[]` tells Postgres the parameter is a list of text.
+
 ## Set (JavaScript)
 
 A collection where each value appears only once. `new Set(list).size === list.length` is a quick way to check "no duplicates in this list", and `set.has(id)` checks membership quickly.
@@ -448,3 +468,84 @@ Cleaning in one place means the database never holds `"eb24…"` and `"EB24…"`
 ## Adding a column to an existing table
 
 `alter table public.students add column father_name text;` adds a column to a table that already has rows. Existing rows get `NULL` (empty) for it, which is why a new column that must start empty can't be `not null` without a default. It went in a **new** migration file, because pushed migrations are never edited.
+
+## multipart/form-data (uploading files)
+
+JSON can only carry text, so files are sent as **multipart/form-data**: the request body is split into parts, each with a name (`files`, `sectionId`) and its content, which can be a whole file. In a route, `await request.formData()` reads it, and `form.getAll("files")` gives every attached file. Browsers use the same format for `<input type="file">` forms.
+
+**Everyday example:** a parcel with several labelled envelopes inside, one per document.
+
+## Structured output (making AI answer in a fixed shape)
+
+Left alone, an AI answers in free text, which code can't rely on. With `responseMimeType: "application/json"` and `responseJsonSchema`, Gemini **must** answer as JSON that fits our schema. We write the schema once in Zod. `z.toJSONSchema(extraction)` turns it into the JSON Schema Gemini understands, and `extraction.safeParse(answer)` checks the reply with the same rules. `.describe("...")` adds a hint for each field.
+
+**Everyday example:** giving someone a printed form with boxes to fill in, instead of asking them to "write down the students".
+
+## Base64
+
+A way to write any file (bytes) as plain letters and digits, so it can travel inside a text/JSON request. `bytes.toString("base64")`. It makes the data about one third bigger, one reason for the 20 MB limit.
+
+## Fallback models, time limits and AbortSignal
+
+AI services get overloaded (503), hit quota limits (429), answer very slowly or are briefly unreachable. So the route keeps a **list** of models and tries the next one when one fails, but not for errors that would fail everywhere (400 bad request, 401/403 bad key).
+
+`AbortSignal.timeout(45_000)` is a timer that **cancels** the request after 45 seconds. Without it, one overloaded model once took 5 minutes to answer.
+
+**Everyday example:** calling a second shop when the first one's line is busy or keeps you on hold too long.
+
+## AI "thinking" level
+
+Newer Gemini models reason step by step before answering. That helps hard problems but costs time. Copying names from a list is easy, so we ask for `ThinkingLevel.LOW`: same quality for this job, much faster.
+
+## Unicode look-alikes and NFKC
+
+Different alphabets have letters that look the same but are different characters: Greek "Α" (Alpha) is not English "A". Text copied from PDFs often contains them. To a computer, "ΑΚΗΤΑR" ≠ "AKHTAR", so searching and duplicate checks would fail. We replace look-alikes with English letters. `normalize("NFKC")` also turns special forms (full-width letters, ligatures like "ﬁ") into normal ones.
+
+## Clearing a value: CASE WHEN instead of COALESCE
+
+`COALESCE($1, father_name)` means "the new value, or keep the old one if nothing was sent". But then sending `null` can never **clear** a value, because null already means "keep". So for fields that may be cleared we send two parameters: "was it sent?" (true/false) and the value:
+
+```sql
+father_name = CASE WHEN $3 THEN $4 ELSE father_name END
+--   $3 = true,  $4 = null   → cleared
+--   $3 = false              → kept
+```
+
+## Calculated vs stored data
+
+Some data is better **worked out each time** than saved. The class calendar is the example: timetable × semester days − off days. If we saved every future class as a row, every timetable change, holiday shift or new semester end date would mean finding and fixing those rows, and one missed row is a wrong calendar. Calculating means there's nothing to keep in sync. We store only what can't be calculated: what actually **happened** (held, cancelled, extra).
+
+**Everyday example:** a school bell timetable on the wall vs a diary. You don't write "Maths, 9:00" into the diary for every Monday of the year; you look at the timetable. The diary only records what happened ("Maths cancelled, teacher sick").
+
+## Soft delete (a "removed" flag)
+
+Instead of deleting a row, set `removed = true` and leave it out of lists. We do this for public holidays: if the row were really deleted, the next "add missing holidays" step would see it missing and add it back. The hidden row remembers "the teacher doesn't want this one".
+
+## Hijri dates with `Intl.DateTimeFormat`
+
+Node can show any date in other calendars. `new Intl.DateTimeFormat("en-u-ca-islamic-umalqura", …)` turns 2026-03-20 into "1 Shawwal 1447" (Eid ul Fitr). **Umm al-Qura** is the Islamic calendar Saudi Arabia calculates in advance. Pakistan follows its own moon sighting, which is often the same day and sometimes a day later. That's why these holidays are marked **tentative** and the teacher can shift them by one day.
+
+## Date arithmetic in Postgres: `date + integer`
+
+In Postgres, adding a number to a `date` moves it by that many days: `'2026-08-25'::date + 1` = `2026-08-26`. That's how `{ "shiftDays": 1 }` moves an off day's start and end together.
+
+## `count(...) FILTER (WHERE ...)`
+
+Counts only the rows that match the condition. One query gives several counts at once:
+
+```sql
+count(a.student_id) FILTER (WHERE a.present)      AS present,
+count(a.student_id) FILTER (WHERE NOT a.present)  AS absent
+```
+
+## Upsert: `ON CONFLICT ... DO UPDATE`
+
+Like `ON CONFLICT DO NOTHING`, but instead of skipping, it **changes** the existing row. "Insert this class, or if it's already there, just update its status." Inside `DO UPDATE`, `class_sessions.status` means the existing row's value, so `COALESCE($5, class_sessions.status)` keeps the old status when no new one was sent.
+
+## `UNION ALL`
+
+Sticks the rows of two `SELECT`s together into one list. The off-day DELETE uses it to return the id from whichever of its two steps (hide or delete) actually matched.
+
+## "Today" depends on the timezone
+
+At 2 a.m. in Karachi it's still yesterday in London. Servers often run in UTC, so `new Date()` alone can give the wrong day. `new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi" }).format(new Date())` gives today's date **in Karachi** as `YYYY-MM-DD` (the Canadian English format happens to be exactly that).

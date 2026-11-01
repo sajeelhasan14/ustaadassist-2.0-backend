@@ -40,6 +40,26 @@ GET    /api/v1/sections/<sectionId>/students              → { "students": [...
 DELETE /api/v1/sections/<sectionId>/students/<studentId>  → 204; only the enrollment goes, the student stays
 ```
 
+## Edit a student (Step 1.6c)
+
+File: [app/api/v1/students/[id]/route.ts](../../app/api/v1/students/[id]/route.ts) (PATCH)
+
+```
+PATCH /api/v1/students/<studentId>   { "fullName": "NASIR AKHTAR" }      ← send only what changes
+ 1. token → 401;  id not a UUID → 404
+ 2. Zod: same cleaning as adding (trim, single spaces, seat no in CAPITALS); fatherName / email may be null = clear it
+ 3. UPDATE students … WHERE id = <id> AND teacher_id = <from token>
+      rollNumber, fullName: COALESCE(new, old)         (not sent → keep)
+      fatherName, email:    CASE WHEN <sent?> THEN new ELSE old END   (so null can CLEAR the value)
+      no row → 404;  23505 (seat no used by another of your students) → 409 seat_number_taken
+   ▼
+200 { "student": { id, rollNumber, fullName, fatherName, email } }
+```
+
+There is one row per student, so a fix shows in **every** section and course the student is in.
+
+Tested over HTTP (see [timetable-attendance.md](timetable-attendance.md) test run): fix "NASIR AKHTR" → "NASIR AKHTAR" (seat no kept); `fatherName: null` clears it and leaves the name alone; giving Sana Ghani's seat no → 409; unknown id → 404.
+
 ## Tested (rolled-back transaction, temporary teachers A and B, real names from the Section A list)
 
 | Action | Result |

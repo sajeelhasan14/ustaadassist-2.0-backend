@@ -59,6 +59,7 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `GET /api/v1/sections/<id>/students` | `{ students: [{ id, rollNumber, fullName, fatherName, email }] }`, by seat number |
 | `POST /api/v1/sections/<id>/students` | body `{ rollNumber, fullName, fatherName?, email? }` → `201 { student, created }`; reuses an existing student with the same seat number; `409 seat_number_taken` (different name) / `409 in_other_section` (already in another section of this course) / `409 already_enrolled` |
 | `DELETE /api/v1/sections/<id>/students/<studentId>` | `204`; removes the enrollment, the student stays |
+| `POST /api/v1/students/extract` | multipart: `files` (1–10 PDF/photo/xlsx/xls/csv, ≤ 20 MB), optional `sectionId` → `{ list: { courseCode, courseTitle, classLabel, sectionName }, students: [{ row, rollNumber, fullName, fatherName, status, message }], warnings }`. **Saves nothing.** `502 ai_failed` if Gemini can't read it |
 
 - **Validation errors** (`400 invalid_input`) also include `fields`, e.g. `{ "endDate": ["End date must be on or after the start date."] }`, so the app can show each message next to its field.
 - **Dates** travel as text `"YYYY-MM-DD"` (selected with `::text` to avoid timezone shifts).
@@ -82,10 +83,24 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `app/api/v1/courses/[id]/sections/route.ts` | `GET` list (with student counts) + `POST` add sections of one course | Flutter app (later), PowerShell |
 | `app/api/v1/sections/[id]/route.ts` | `PATCH` rename + `DELETE` one section | Flutter app (later), PowerShell |
 | `docs/flows/sections.md` | Trace + test commands for the sections API | you |
-| `app/api/v1/sections/[id]/students/route.ts` | `GET` list + `POST` add (find-or-create + enroll) students of one section | Flutter app (later), PowerShell, the import (Step 1.6) |
+| `app/api/v1/sections/[id]/students/route.ts` | `GET` list + `POST` add (find-or-create + enroll) students of one section | Flutter app (later: adding one student by hand), PowerShell |
 | `app/api/v1/sections/[id]/students/[studentId]/route.ts` | `DELETE` take a student out of a section | Flutter app (later), PowerShell |
 | `docs/flows/students.md` | Trace + test commands for the students API | you |
+| `app/api/v1/students/extract/route.ts` | `POST` read a class list in any format with Gemini, then clean and check every row (preview only) | Flutter app (camera/file import, later), PowerShell |
+| `app/api/v1/sections/[id]/import/route.ts` | `POST` save the confirmed rows of an import: all students created + enrolled in one transaction; rows already in the course are skipped | Flutter app (after the import preview, later), PowerShell |
+| `docs/flows/student-import.md` | Trace + test commands for the student import (step 1 read, step 2 save) | you |
 | `docs/flows/semesters.md` | Trace + test commands for the semesters API | you |
+| `app/api/v1/students/[id]/route.ts` | `PATCH` fix a student's seat no, name, father's name or email (shows in every section) | Flutter app (later), PowerShell |
+| `lib/holidays.ts` | `builtInHolidays(from, to)`: Pakistan's public holidays (fixed dates + Islamic dates from the Umm al-Qura calendar) and `addDays()`. **Date math only, no database.** The one shared file, because two routes need exactly the same calendar | `off-days/route.ts`, `sections/[id]/sessions/route.ts` |
+| `app/api/v1/off-days/route.ts` | `GET ?semesterId=` off days in a semester (adds missing public holidays first) + `POST` add your own off day(s) | Flutter app (later), PowerShell |
+| `app/api/v1/off-days/[id]/route.ts` | `PATCH` rename / move / shift / confirm + `DELETE` (public holidays are only hidden) | Flutter app (later), PowerShell |
+| `docs/flows/off-days.md` | Trace + test commands for holidays and off days | you |
+| `app/api/v1/sections/[id]/timetable/route.ts` | `GET` + `PUT` (replace the whole week) a section's weekly classes | Flutter app (later), PowerShell |
+| `app/api/v1/sections/[id]/sessions/route.ts` | `GET` the whole semester's classes, worked out from timetable − off days + stored classes; `POST` find-or-create one class (cancel, extra class, or get an id for attendance) | Flutter app (later), PowerShell |
+| `app/api/v1/sessions/[id]/route.ts` | `PATCH` cancel / un-cancel / note + `DELETE` forget a stored class | Flutter app (later), PowerShell |
+| `app/api/v1/sessions/[id]/attendance/route.ts` | `GET` roster with marks (everyone present if not marked yet) + `PUT { absent: [...] }` | Flutter app (later), PowerShell |
+| `app/api/v1/sections/[id]/attendance/route.ts` | `GET` each student's present / marked / % / shortage | Flutter app (later), PowerShell |
+| `docs/flows/timetable-attendance.md` | Trace + test commands for timetable, class calendar and attendance | you |
 | `lib/supabase/server.ts` | `createSupabaseServerClient()`: **the one Supabase client**. Reads the login from cookies, or checks a Bearer token passed to `getClaims(token)` | pages, server actions, every API route (only `proxy.ts` has its own setup) |
 | `proxy.ts` | Runs before every page: refreshes the login, redirects logged-out users to `/login` | Next.js, automatically |
 | `lib/auth-actions.ts` | Server Actions `login`, `signup`, `logout` | the login/signup forms, the Log out button |
@@ -109,17 +124,24 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `public.sections` | class group ("A") | API (Step 1.5a); "A" auto-created with each course | belongs to a course; name unique per course |
 | `public.students` | student | API (Step 1.5b) / import (Step 1.6) | belongs to a teacher; roll number (= "Seat No") unique per teacher, stored in capitals; optional `father_name` |
 | `public.enrollments` | student in a section | API (Step 1.5b) | links sections ↔ students (many-to-many) |
+| `public.off_days` | holiday or day off (one day or a range) | `GET /off-days` / `GET /sections/<id>/sessions` (public holidays, automatically) / API (teacher's own) | belongs to a teacher, applies to all their sections; `holiday_key` (pre-filled only, unique per teacher), `tentative` (Islamic dates until confirmed), `removed` (deleted public holiday, kept hidden) |
+| `public.timetable_slots` | weekly class ("Mon 09:00–10:30") | API (Step 2.2) | belongs to a section; `weekday` 1 = Monday … 7 = Sunday |
+| `public.class_sessions` | class worth remembering: held, cancelled or extra | API (Step 2.3) | belongs to a section; unique per section + date + start time. **Ordinary future classes are not stored**, they are worked out |
+| `public.attendance` | one student's mark at one held class | API (Step 2.4) | `present` true/false; replaced as a whole each time the class is saved |
 
 How they connect (`──<` means "one to many"):
 
 ```
 teachers ──< semesters ──< courses ──< sections >──┐
-    │                         │                     enrollments
-    │                         └──< topics           │
-    └──< students >─────────────────────────────────┘
+    │                         │           │  │      enrollments
+    │                         └──< topics │  │      │
+    │                                     │  └──< timetable_slots
+    │                                     └──< class_sessions ──< attendance >──┐
+    ├──< students >───────────────────────────────────────────────┴─────────────┘
+    └──< off_days
 ```
 
-**Who owns what:** `semesters` and `students` have `teacher_id`. Everything else is owned through its parent: a section belongs to a course, which belongs to a semester, which belongs to a teacher. Deleting a parent deletes its children (`on delete cascade`).
+**Who owns what:** `semesters`, `students` and `off_days` have `teacher_id`. Everything else is owned through its parent: a section belongs to a course, which belongs to a semester, which belongs to a teacher. Deleting a parent deletes its children (`on delete cascade`).
 
 ## Changing the database
 
@@ -144,3 +166,7 @@ One-time setup on a new computer: `npx supabase login`, then `npx supabase link 
 | Built for one university | Final results are exported in that university's exact format. |
 | Teacher types as little as possible | The app pre-fills, imports (CSV or PDF scan) and calculates; the teacher only confirms and enters marks. |
 | Individual teacher accounts | No school/admin level for now. |
+| Ordinary classes are worked out, not stored | The calendar = timetable × semester days − off days, recalculated on every request. Only held / cancelled / extra classes are rows. Changing the timetable, a holiday or the semester dates re-plans every future class instantly, with nothing to regenerate or get out of sync. |
+| Public holidays are pre-filled | Fixed national days + Islamic days (Umm al-Qura, marked tentative). The teacher confirms or shifts with one tap and never types a holiday. A deleted one is hidden, not re-added. |
+| Attendance: send only the absent | Everyone is present by default, so a class takes a few taps. % = present ÷ classes the student was marked in; shortage below 75% (changeable per request with `?min=`). |
+| Times are Karachi time | "Today" (for "class hasn't happened yet" and the calendar summary) uses `Asia/Karachi`, the university's timezone. |
