@@ -549,3 +549,15 @@ Sticks the rows of two `SELECT`s together into one list. The off-day DELETE uses
 ## "Today" depends on the timezone
 
 At 2 a.m. in Karachi it's still yesterday in London. Servers often run in UTC, so `new Date()` alone can give the wrong day. `new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi" }).format(new Date())` gives today's date **in Karachi** as `YYYY-MM-DD` (the Canadian English format happens to be exactly that).
+
+## Postgres `numeric` and why `pg` returns it as text
+
+`numeric(6,2)` stores exact decimal numbers: up to 6 digits, 2 after the point (so 9999.99 at most). It's exact, unlike JavaScript numbers. That's why `pg` hands it over as **text** ("7.50"): converting it to a JavaScript number could lose precision for huge values. Marks are small, so we cast in SQL, `marks::float8`, and get a normal number (7.5) in the JSON.
+
+## Why 0.1 + 0.2 isn't 0.3 in JavaScript
+
+Computers store decimals in binary, and most decimals (0.1, 33.3…) can't be written exactly in binary, just like 1/3 can't be written exactly in decimal (0.3333…). Tiny errors appear: `33.3 + 33.3 + 33.4` gives `100.00000000000001`. **Fix:** compare in whole hundredths, `Math.round(x * 100)`. Whole numbers add up exactly. **Everyday example:** shops count in paisa, not in fractions of a rupee, so the till always balances.
+
+## "Not entered" vs 0 (no row vs a row)
+
+A missing mark and a zero mean different things: "hasn't been marked yet" vs "sat the test and scored nothing". We keep them apart by **not storing a row** until a mark is entered. The API shows a missing mark as `null` and counts it as `missing`, so the teacher can see what's left to enter.

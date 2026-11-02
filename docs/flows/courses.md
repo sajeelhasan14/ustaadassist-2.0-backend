@@ -14,8 +14,10 @@ POST /api/v1/semesters/<semesterId>/courses   { "code": "CS-201", "title": "Data
       no row inserted (not your semester) → 404
       23505 (code already used in this semester) → 409
    ▼
-201 { "course": { "id", "semesterId", "code", "title" }, "section": { ..., "name": "A" } }   ← section "A" is auto-created, see sections.md
+201 { "course": { "id", "semesterId", "code", "title", "totalMarks" }, "section": { ..., "name": "A" } }   ← section "A" is auto-created, see sections.md
 ```
+
+**Total marks (Phase 4):** every course has `totalMarks`, what it is "out of" (default 100). Send it when adding (`"totalMarks": 50`) or change it with `PATCH /courses/<id> { "totalMarks": 120 }`. It can't go below what the assessments already add up to (400 `below_allocated`). See [assessments-marks.md](assessments-marks.md).
 
 ## Tested (rolled-back transaction, temporary teachers A and B)
 

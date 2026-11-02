@@ -7,10 +7,12 @@ const courseChanges = z
   .object({
     code: z.string().trim().min(1, "Code can't be empty."),
     title: z.string().trim().min(1, "Title can't be empty."),
+    totalMarks: z.number().positive().max(1000),
   })
   .partial();
 
-// PATCH /api/v1/courses/<id>: change a course's code and/or title.
+// PATCH /api/v1/courses/<id>: change a course's code, title and/or total marks.
+// The total can't go below the marks already given to its assessments.
 export async function PATCH(request: Request, ctx: RouteContext<"/api/v1/courses/[id]">) {
   const teacherId = await getTeacherId(request);
   if (!teacherId) return errorResponse(401, "unauthorized", "Missing or invalid login token.");
@@ -22,18 +24,35 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/v1/courses
   if (!parsed.success) {
     return errorResponse(400, "invalid_input", "Some fields are invalid.", z.flattenError(parsed.error).fieldErrors);
   }
-  const { code, title } = parsed.data;
+  const { code, title, totalMarks } = parsed.data;
+
+  if (totalMarks !== undefined) {
+    const [course] = await query<{ allocated: number }>(
+      `SELECT (SELECT COALESCE(SUM(max_marks), 0) FROM assessments WHERE course_id = c.id)::float8 AS allocated
+         FROM courses c JOIN semesters s ON s.id = c.semester_id
+        WHERE c.id = $1 AND s.teacher_id = $2`,
+      [id, teacherId],
+    );
+    if (!course) return notFound();
+    // Compared in hundredths, so decimal marks add up exactly.
+    if (Math.round(totalMarks * 100) < Math.round(course.allocated * 100)) {
+      return errorResponse(400, "below_allocated", `The assessments already add up to ${course.allocated} marks.`, {
+        totalMarks: [`Must be at least ${course.allocated}.`],
+      });
+    }
+  }
 
   try {
     // UPDATE ... FROM semesters: only changes the course if its semester belongs to this teacher.
     const [course] = await query(
       `UPDATE courses c
           SET code = COALESCE($1, c.code),
-              title = COALESCE($2, c.title)
+              title = COALESCE($2, c.title),
+              total_marks = COALESCE($5, c.total_marks)
          FROM semesters s
         WHERE c.id = $3 AND s.id = c.semester_id AND s.teacher_id = $4
-        RETURNING c.id, c.semester_id AS "semesterId", c.code, c.title`,
-      [code ?? null, title ?? null, id, teacherId],
+        RETURNING c.id, c.semester_id AS "semesterId", c.code, c.title, c.total_marks::float8 AS "totalMarks"`,
+      [code ?? null, title ?? null, id, teacherId, totalMarks ?? null],
     );
     if (!course) return notFound();
     return Response.json({ course });

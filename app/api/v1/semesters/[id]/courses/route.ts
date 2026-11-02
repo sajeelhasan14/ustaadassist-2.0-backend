@@ -6,6 +6,8 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 const newCourse = z.object({
   code: z.string().trim().min(1, "Code is required."),
   title: z.string().trim().min(1, "Title is required."),
+  // What the course is "out of". Most courses are 100.
+  totalMarks: z.number().positive().max(1000).default(100),
 });
 
 // GET /api/v1/semesters/<id>/courses: the courses in one of the teacher's semesters.
@@ -18,7 +20,7 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/semesters
 
   // The JOIN to semesters is the ownership check: another teacher's semester gives an empty list.
   const courses = await query(
-    `SELECT c.id, c.semester_id AS "semesterId", c.code, c.title
+    `SELECT c.id, c.semester_id AS "semesterId", c.code, c.title, c.total_marks::float8 AS "totalMarks"
        FROM courses c
        JOIN semesters s ON s.id = c.semester_id
       WHERE c.semester_id = $1 AND s.teacher_id = $2
@@ -28,7 +30,7 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/semesters
   return Response.json({ courses });
 }
 
-// POST /api/v1/semesters/<id>/courses: add a course to a semester. Body: { code, title }
+// POST /api/v1/semesters/<id>/courses: add a course to a semester. Body: { code, title, totalMarks? (default 100) }
 // Every new course also gets section "A", so most teachers never have to set up sections.
 export async function POST(request: Request, ctx: RouteContext<"/api/v1/semesters/[id]/courses">) {
   const teacherId = await getTeacherId(request);
@@ -41,7 +43,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/semester
   if (!parsed.success) {
     return errorResponse(400, "invalid_input", "Some fields are invalid.", z.flattenError(parsed.error).fieldErrors);
   }
-  const { code, title } = parsed.data;
+  const { code, title, totalMarks } = parsed.data;
 
   try {
     // One statement, two inserts (a CTE): the course and its section "A" are saved together or not at all.
@@ -49,18 +51,19 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/semester
     // if it isn't, new_course is empty, so no section is inserted either.
     const [created] = await query(
       `WITH new_course AS (
-         INSERT INTO courses (semester_id, code, title)
-         SELECT id, $2, $3 FROM semesters WHERE id = $1 AND teacher_id = $4
-         RETURNING id, semester_id, code, title
+         INSERT INTO courses (semester_id, code, title, total_marks)
+         SELECT id, $2, $3, $5 FROM semesters WHERE id = $1 AND teacher_id = $4
+         RETURNING id, semester_id, code, title, total_marks
        ), new_section AS (
          INSERT INTO sections (course_id, name)
          SELECT id, 'A' FROM new_course
          RETURNING id, course_id, name
        )
-       SELECT json_build_object('id', c.id, 'semesterId', c.semester_id, 'code', c.code, 'title', c.title) AS course,
+       SELECT json_build_object('id', c.id, 'semesterId', c.semester_id, 'code', c.code, 'title', c.title,
+                                'totalMarks', c.total_marks::float8) AS course,
               json_build_object('id', s.id, 'courseId', s.course_id, 'name', s.name) AS section
          FROM new_course c JOIN new_section s ON s.course_id = c.id`,
-      [semesterId, code, title, teacherId],
+      [semesterId, code, title, teacherId, totalMarks],
     );
     if (!created) return errorResponse(404, "not_found", "Semester not found.");
     return Response.json(created, { status: 201 });
