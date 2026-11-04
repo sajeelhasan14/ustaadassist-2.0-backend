@@ -561,3 +561,27 @@ Computers store decimals in binary, and most decimals (0.1, 33.3…) can't be wr
 ## "Not entered" vs 0 (no row vs a row)
 
 A missing mark and a zero mean different things: "hasn't been marked yet" vs "sat the test and scored nothing". We keep them apart by **not storing a row** until a mark is entered. The API shows a missing mark as `null` and counts it as `missing`, so the teacher can see what's left to enter.
+
+## AI agent
+
+A normal AI call is one question and one answer. An agent can take steps: it decides what it needs, uses a tool, looks at the result, and decides again. Like asking an assistant at the office "who's short on attendance?": they open the register, read it, and then answer you. The student import is one call. The assistant is an agent.
+
+## Tool (function calling)
+
+Gemini can't reach our database. We give it a list of tools, each with a name and a description. It replies "please run `list_courses`", **our** code runs it, and we send back the result. Like a manager who can't go to the file room: they ask, and a clerk fetches the file. Gemini only ever sees the list and the results, never the code.
+
+## The agent loop
+
+The repeating part of an agent: ask Gemini → run the tools it asked for → add the results to the conversation → ask again. It ends when Gemini replies with text and no tool request. We stop it after 6 rounds or 90 seconds, so it can't run forever.
+
+## System instructions
+
+Rules sent to the AI with every request, separate from the teacher's message. Like a job description handed to a new employee. They greatly reduce mistakes but can't guarantee none, so the important protections (login, ownership, no write tools) are in our code, not only in the instructions.
+
+## Hallucination
+
+When an AI states something false as if it were true. In testing Gemini invented a tool name and two screen names. That's why facts must come from tools, and why our code checks every tool name and argument.
+
+## Rate limit and quota (429)
+
+A limit on how many requests an API accepts. Google's free tier allows 20 requests a day per model, and then replies `429`. A `503` is different: it means the model is busy for everyone right now, and trying again soon often works.

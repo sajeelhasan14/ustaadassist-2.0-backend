@@ -61,6 +61,8 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `DELETE /api/v1/sections/<id>/students/<studentId>` | `204`; removes the enrollment, the student stays |
 | `POST /api/v1/students/extract` | multipart: `files` (1–10 PDF/photo/xlsx/xls/csv, ≤ 20 MB), optional `sectionId` → `{ list: { courseCode, courseTitle, classLabel, sectionName }, students: [{ row, rollNumber, fullName, fatherName, status, message }], warnings }`. **Saves nothing.** `502 ai_failed` if Gemini can't read it |
 
+| `POST /api/v1/assistant` | body `{ message, history? }` → `{ reply, toolsUsed }`. Reads data with tools, changes nothing. `502 ai_failed` if Gemini can't be reached |
+
 - **Validation errors** (`400 invalid_input`) also include `fields`, e.g. `{ "endDate": ["End date must be on or after the start date."] }`, so the app can show each message next to its field.
 - **Dates** travel as text `"YYYY-MM-DD"` (selected with `::text` to avoid timezone shifts).
 - **Someone else's id** gets the same `404` as a missing id, so ids can't be probed.
@@ -109,6 +111,14 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `app/api/v1/sections/[id]/marks/route.ts` | `GET` the gradebook: students × assessments, total, % of course total, missing count | Flutter app (later), result sheet (later), PowerShell |
 | `docs/flows/assessments-marks.md` | Trace + test commands for assessments, marks entry and the gradebook | you |
 | `docs/flows/planner.md` | How the teaching plan is worked out (inside `GET /sections/<id>/sessions`) and how taught topics are recorded | you |
+| `app/api/v1/assistant/route.ts` | `POST` ask the assistant: checks login and input, then calls `runAgent` | Flutter chat (later), PowerShell |
+| `lib/agent/run-agent.ts` | `runAgent()`: the agent loop (ask Gemini, run tools, repeat) | `assistant/route.ts` |
+| `lib/agent/gemini.ts` | `askGemini()`: one round with Gemini, with model fallback | `run-agent.ts` |
+| `lib/agent/instructions.ts` | `buildInstructions()`: the rules the agent follows | `run-agent.ts` |
+| `lib/agent/api-client.ts` | `createApiGet()`: reads our API with the teacher's token | `assistant/route.ts`, every tool |
+| `lib/agent/types.ts` | `AgentTool`, `ApiGet`, `defineTool()` | every tool, `run-agent.ts` |
+| `lib/agent/tools/` | One file per tool; `index.ts` lists them | `run-agent.ts` |
+| `docs/flows/assistant.md` | Trace, rules, test results and test commands for the assistant | you |
 | `lib/supabase/server.ts` | `createSupabaseServerClient()`: **the one Supabase client**. Reads the login from cookies, or checks a Bearer token passed to `getClaims(token)` | pages, server actions, every API route (only `proxy.ts` has its own setup) |
 | `proxy.ts` | Runs before every page: refreshes the login, redirects logged-out users to `/login` | Next.js, automatically |
 | `lib/auth-actions.ts` | Server Actions `login`, `signup`, `logout` | the login/signup forms, the Log out button |
@@ -186,4 +196,7 @@ One-time setup on a new computer: `npx supabase login`, then `npx supabase link 
 | What was taught is recorded on the attendance screen | The app pre-fills `plan.nextTopic`; the teacher just saves. Chosen by the user for less effort (2026-11-02); can move to the planner screen later without changing the database. |
 | Marks: no weights, no fixed categories | Total = plain sum of marks entered; % = total ÷ course total. Grades wait for the university's result format. An assessment that would take the course over its total is refused, so totals never go above 100%. |
 | Decimal marks compared in hundredths | In JavaScript 33.3 + 33.3 + 33.4 = 100.00000000000001. Every "over the total / above max" check compares `Math.round(x × 100)`, and Postgres stores `numeric(6,2)`. |
+| The agent lives in `lib/agent/`, not in its route | The one exception to "logic inside the route". It has several parts that change for different reasons, and its tools keep growing. Chosen by the user (2026-11-04). |
+| Agent tools call our own API with the teacher's token | No logic is copied, and every login and ownership check still applies. |
+| Gemini via `@google/genai`, with our own loop | Already installed, no agent framework to learn, and every step can be read. |
 | Times are Karachi time | "Today" (for "class hasn't happened yet" and the calendar summary) uses `Asia/Karachi`, the university's timezone. |
