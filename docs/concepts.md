@@ -585,3 +585,23 @@ When an AI states something false as if it were true. In testing Gemini invented
 ## Rate limit and quota (429)
 
 A limit on how many requests an API accepts. Google's free tier allows 20 requests a day per model, and then replies `429`. A `503` is different: it means the model is busy for everyone right now, and trying again soon often works.
+
+## Structured output (a schema for AI answers)
+
+Normally an AI replies in free text, which code can't rely on. With a schema we give it a form to fill in: these exact fields, of these types. It's the difference between "tell me about the question" and a printed form with boxes for Question, Answer and Marks. We still check the reply afterwards, because the form forces the shape, not the truth: a multiple-choice answer can still fail to match any option.
+
+## Draft and approved (human in the loop)
+
+AI work is treated like a junior assistant's work: useful, but someone responsible signs it off. `status` starts as `draft`, and only the teacher can move it to `approved`. A paper uses approved questions only, so an unchecked AI question can't reach students.
+
+## `jsonb`
+
+A Postgres column type that stores JSON. We use it for a question's `options`, because the list of choices is always read together with its question, so it doesn't need its own table.
+
+## `jsonb_to_recordset` (many rows in one insert)
+
+Turns a JSON list into table rows inside a query. We send all generated questions as one value and Postgres unpacks them, like handing over one stack of forms instead of walking to the counter ten times.
+
+## Thinking level
+
+Gemini can reason before it answers. More thinking means better work but a slower reply. Copying a student list uses `LOW`. Writing exam questions uses `MEDIUM`, because quality matters more there.

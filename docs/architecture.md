@@ -60,6 +60,9 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `POST /api/v1/sections/<id>/students` | body `{ rollNumber, fullName, fatherName?, email? }` → `201 { student, created }`; reuses an existing student with the same seat number; `409 seat_number_taken` (different name) / `409 in_other_section` (already in another section of this course) / `409 already_enrolled` |
 | `DELETE /api/v1/sections/<id>/students/<studentId>` | `204`; removes the enrollment, the student stays |
 | `POST /api/v1/students/extract` | multipart: `files` (1–10 PDF/photo/xlsx/xls/csv, ≤ 20 MB), optional `sectionId` → `{ list: { courseCode, courseTitle, classLabel, sectionName }, students: [{ row, rollNumber, fullName, fatherName, status, message }], warnings }`. **Saves nothing.** `502 ai_failed` if Gemini can't read it |
+| `GET /api/v1/assessments/<id>/questions` | `{ assessment, approvedMarks, draftMarks, questions }`, in order |
+| `POST /api/v1/assessments/<id>/questions` | body `{ type, text, options?, answer, explanation?, difficulty?, marks, topicId? }` → `201 { question }`, already approved |
+| `POST /api/v1/assessments/<id>/questions/generate` | body (all optional) `{ topicIds, count, types, difficulty, note }` → `201 { questions, targetMarks, marksTotal, dropped }`, saved as drafts. `502 ai_failed` if Gemini can't be reached |
 
 | `POST /api/v1/assistant` | body `{ message, history? }` → `{ reply, toolsUsed }`. Reads data with tools, changes nothing. `502 ai_failed` if Gemini can't be reached |
 
@@ -109,6 +112,8 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `app/api/v1/assessments/[id]/route.ts` | `PATCH` rename / change max marks + `DELETE` (its marks go too) | Flutter app (later), PowerShell |
 | `app/api/v1/assessments/[id]/marks/route.ts` | `GET` class list with marks (`?sectionId=` optional) + `PUT` save marks for many students at once (`null` clears) | Flutter app (later), PowerShell |
 | `app/api/v1/sections/[id]/marks/route.ts` | `GET` the gradebook: students × assessments, total, % of course total, missing count | Flutter app (later), result sheet (later), PowerShell |
+| `app/api/v1/assessments/[id]/questions/route.ts` | `GET` an assessment's questions + `POST` add one the teacher wrote | Flutter app (later), PowerShell |
+| `app/api/v1/assessments/[id]/questions/generate/route.ts` | `POST` Gemini writes questions from the topics, saved as drafts | Flutter app (later), PowerShell |
 | `docs/flows/assessments-marks.md` | Trace + test commands for assessments, marks entry and the gradebook | you |
 | `docs/flows/planner.md` | How the teaching plan is worked out (inside `GET /sections/<id>/sessions`) and how taught topics are recorded | you |
 | `app/api/v1/assistant/route.ts` | `POST` ask the assistant: checks login and input, then calls `runAgent` | Flutter chat (later), PowerShell |
@@ -147,6 +152,7 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `public.class_sessions` | class worth remembering: held, cancelled or extra | API (Step 2.3) | belongs to a section; unique per section + date + start time. **Ordinary future classes are not stored**, they are worked out |
 | `public.assessments` | anything marked: "Quiz 1", "Mid", "Final"… | API (Step 4.1) | belongs to a course (shared by its sections); `max_marks`; name unique per course; their sum may not exceed the course total (checked by the API) |
 | `public.marks` | one student's marks in one assessment | API (Step 4.2) | no row = not entered (≠ 0); `marks <= max_marks` checked by the API |
+| `public.questions` | question on an assessment | API (Step 5.1) | belongs to an assessment; `status` draft/approved, `source` ai/manual; `topic_id` optional, cleared if the topic is deleted; multiple choice must have `options` |
 | `public.session_topics` | topic taught in a class | attendance `PUT` with `topicIds` (Step 3.1) | links class_sessions ↔ topics (one class can cover 2 topics; one topic can take several classes) |
 | `public.attendance` | one student's mark at one held class | API (Step 2.4) | `present` true/false; replaced as a whole each time the class is saved |
 
