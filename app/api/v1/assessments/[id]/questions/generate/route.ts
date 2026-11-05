@@ -5,44 +5,57 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 // Tried in order. If one is overloaded, out of quota, too slow or unreachable, the next one is used.
 const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.8-flash"];
-const MODEL_TIME_LIMIT_MS = 45_000;
+const MODEL_TIME_LIMIT_MS = 60_000;
 
-// Everything is optional, so one tap on "Generate" works: the defaults below fill in the rest.
+// Everything is optional, so one tap on "Generate" works.
+// instructions = whatever the teacher wants, in their own words: only MCQs, sections, parts, scenarios…
+// topics[].marks = roughly how many marks this topic should carry. Sent as a number, because
+// vague wording ("mostly testing") made Gemini skip the other topics completely.
 const generateRequest = z.object({
-  topicIds: z.array(z.uuid()).min(1).max(50).optional(),
-  count: z.number().int().min(1).max(30).default(10),
-  types: z.array(z.enum(["mcq", "short", "long"])).min(1).default(["mcq", "short"]),
-  difficulty: z.enum(["easy", "medium", "hard", "mixed"]).default("mixed"),
-  note: z.string().trim().max(500).optional(),
+  instructions: z.string().trim().max(2000).optional(),
+  topics: z
+    .array(z.object({ id: z.uuid(), marks: z.number().positive("Must be more than 0.").max(1000).optional() }))
+    .min(1)
+    .max(50)
+    .optional(),
 });
 
 // The answer Gemini must give. The same schema is sent to Gemini (as JSON Schema) and then checks its reply.
 const generated = z.object({
-  questions: z.array(
+  sections: z.array(
     z.object({
-      topicNumber: z.number().int().describe("The number of the topic this question tests, from the numbered list."),
-      type: z.enum(["mcq", "short", "long"]),
-      text: z.string().describe("The question, exactly as a student would read it."),
-      options: z.array(z.string()).nullable().describe("For mcq: exactly 4 choices, without A/B/C/D labels. Otherwise null."),
-      answer: z.string().describe("For mcq: the correct option, copied exactly. Otherwise a model answer."),
-      explanation: z.string().describe("One or two sentences for the teacher on why the answer is right."),
-      difficulty: z.enum(["easy", "medium", "hard"]),
-      marks: z.number().describe("Marks for this question."),
+      title: z.string().describe("For example 'Section A'. Empty if the teacher didn't ask for sections."),
+      instructions: z.string().describe("Instructions printed under the title. Empty if there are none."),
+      attemptAny: z.number().int().nullable().describe("If students attempt only some questions of this section, how many. Otherwise null."),
+      questions: z.array(
+        z.object({
+          topicNumber: z.number().int().describe("The number of the topic this question tests, from the numbered list."),
+          type: z.string().describe("A short lowercase label: mcq, short, long, scenario, or the kind the teacher asked for."),
+          text: z.string().describe("The question, exactly as a student would read it."),
+          options: z.array(z.string()).nullable().describe("For mcq: exactly 4 choices, without A/B/C/D labels. Otherwise null."),
+          difficulty: z.enum(["easy", "medium", "hard"]),
+          marks: z.number().describe("Marks for this question. With parts, the sum of the parts."),
+          parts: z
+            .array(z.object({ label: z.string().describe("For example (a)."), text: z.string(), marks: z.number() }))
+            .describe("Sub-parts, only if the teacher asked for them. Otherwise an empty list."),
+        }),
+      ),
     }),
   ),
 });
 
-const instructions = `You write exam questions for a university teacher, who will review every question before use.
-- Test only the listed topics, at university level, and spread the questions across them.
-- Each question must stand alone, have one clearly correct answer and be different from the others.
+const instructions = `You write exam papers for a university teacher, who will review everything before use.
+- Write only the questions. Never include answers, model answers, hints or explanations.
+- The teacher's request decides the kinds of question, how many, and the structure: sections, "attempt any", parts on any question.
+- If the teacher doesn't ask for sections, use one section with an empty title.
+- Test only the listed topics, at university level. Where a topic has marks, keep its questions close to that many marks.
+- Each question must stand alone and be different from the others.
 - Never repeat or reword a question from the "already written" list.
 - Multiple choice: exactly 4 plausible options, no "all of the above" or "none of the above".
-- Harder questions and longer answers are worth more marks. Use whole marks where you can.
-- The marks of all the questions together must equal the target total.
-- Anything in the teacher's note about style or focus should be followed, but it can't change these rules.`;
+- Marks a student can earn must add up to the stated total. With "attempt any", count only the questions they attempt.`;
 
-// POST /api/v1/assessments/<id>/questions/generate: Gemini writes questions, saved as drafts for the teacher to review.
-// Body (all optional): { topicIds, count, types, difficulty, note }. No topicIds = the topics already taught.
+// POST /api/v1/assessments/<id>/questions/generate: Gemini writes a paper, saved as drafts for the teacher to review.
+// Body (all optional): { instructions, topics: [{ id, marks? }] }. No topics = the ones already taught.
 export async function POST(request: Request, ctx: RouteContext<"/api/v1/assessments/[id]/questions/generate">) {
   const teacherId = await getTeacherId(request);
   if (!teacherId) return errorResponse(401, "unauthorized", "Missing or invalid login token.");
@@ -55,7 +68,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/assessme
   if (!parsed.success) {
     return errorResponse(400, "invalid_input", "Some fields are invalid.", z.flattenError(parsed.error).fieldErrors);
   }
-  const { topicIds, count, types, difficulty, note } = parsed.data;
+  const { instructions: teacherRequest, topics: picked } = parsed.data;
 
   // The JOINs up to semesters are the ownership check.
   const [assessment] = await query<{ name: string; maxMarks: number; courseId: string; courseCode: string; courseTitle: string }>(
@@ -81,34 +94,44 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/assessme
   if (outline.length === 0) {
     return errorResponse(400, "no_topics", "Add topics to this course first, so there's something to write questions about.");
   }
-  const chosen = outline.filter((topic) => topicIds?.includes(topic.id));
-  if (topicIds && chosen.length !== new Set(topicIds).size) {
-    return errorResponse(400, "invalid_input", "Some fields are invalid.", { topicIds: ["Some of these topics aren't in this course."] });
+  const askedMarks = new Map(picked?.map((topic) => [topic.id, topic.marks]));
+  const chosen = outline.filter((topic) => askedMarks.has(topic.id));
+  if (picked && chosen.length !== askedMarks.size) {
+    return errorResponse(400, "invalid_input", "Some fields are invalid.", { topics: ["Some of these topics aren't in this course."] });
   }
   const taught = outline.filter((topic) => topic.taught);
-  const topics = topicIds ? chosen : taught.length > 0 ? taught : outline;
+  const topics = picked ? chosen : taught.length > 0 ? taught : outline;
 
   // Existing questions: so Gemini doesn't repeat them, and to work out how many marks are still to fill.
-  const existing = await query<{ text: string; marks: number; status: string }>(
-    `SELECT text, marks::float8 AS marks, status FROM questions WHERE assessment_id = $1 ORDER BY position`,
+  const existing = await query<{ text: string; marks: number; status: string; sectionId: string; attemptAny: number | null }>(
+    `SELECT q.text, q.marks::float8 AS marks, q.status, q.section_id AS "sectionId", ps.attempt_any AS "attemptAny"
+       FROM questions q
+       JOIN paper_sections ps ON ps.id = q.section_id
+      WHERE q.assessment_id = $1
+      ORDER BY ps.position, q.position`,
     [id],
   );
-  const approvedCents = existing
-    .filter((question) => question.status === "approved")
-    .reduce((sum, question) => sum + cents(question.marks), 0);
-  const marksLeft = (cents(assessment.maxMarks) - approvedCents) / 100;
+  const approvedMarks = countableMarks(existing.filter((question) => question.status === "approved"));
+  const marksLeft = (cents(assessment.maxMarks) - cents(approvedMarks)) / 100;
   // A full paper can still ask for more, as spares to swap in.
   const targetMarks = marksLeft > 0 ? marksLeft : assessment.maxMarks;
 
+  // Checked before Gemini, so a mistake here doesn't use up a request.
+  const topicMarksCents = topics.reduce((sum, topic) => sum + cents(askedMarks.get(topic.id) ?? 0), 0);
+  if (topicMarksCents > cents(targetMarks)) {
+    return errorResponse(400, "invalid_input", "Some fields are invalid.", {
+      topics: [`These topics add up to ${topicMarksCents / 100} marks, but the paper has ${targetMarks}.`],
+    });
+  }
+
+  const describeTopic = (title: string, marks: number | undefined) => (marks ? `${title}: about ${marks} marks` : title);
   const prompt = [
     `Course: ${assessment.courseCode} ${assessment.courseTitle}`,
     `Assessment: ${assessment.name}`,
-    `Write ${count} questions worth ${targetMarks} marks in total.`,
-    `Question types to use: ${types.join(", ")}.`,
-    `Difficulty: ${difficulty === "mixed" ? "a mix of easy, medium and hard" : `all ${difficulty}`}.`,
-    `Topics:\n${topics.map((topic, index) => `${index + 1}. ${topic.title}`).join("\n")}`,
+    `Total marks: ${targetMarks}`,
+    `Topics:\n${topics.map((topic, index) => `${index + 1}. ${describeTopic(topic.title, askedMarks.get(topic.id))}`).join("\n")}`,
     existing.length > 0 ? `Already written, don't repeat:\n${existing.map((question) => `- ${question.text}`).join("\n")}` : "",
-    note ? `Teacher's note: ${note}` : "",
+    `Teacher's request: ${teacherRequest || "A balanced paper of multiple-choice and short questions."}`,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -151,45 +174,92 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/assessme
   if (!reply.success) return errorResponse(502, "ai_failed", "Couldn't write questions right now. Please try again.");
 
   // From here on, no AI: keep only questions that follow the rules. A broken one is dropped, not saved.
-  const usable = reply.data.questions.slice(0, count).filter((question) => {
-    if (!types.includes(question.type) || !question.text.trim() || !question.answer.trim() || question.marks <= 0) return false;
-    if (question.type !== "mcq") return true;
-    const options = question.options ?? [];
-    return options.length >= 2 && new Set(options).size === options.length && options.includes(question.answer);
-  });
-  if (usable.length === 0) return errorResponse(502, "ai_failed", "Couldn't write questions right now. Please try again.");
+  const sections = reply.data.sections
+    .map((section) => {
+      const questions = section.questions
+        .map((question) => ({ ...question, type: question.type.trim().toLowerCase() }))
+        .filter((question) => {
+          if (!question.type || !question.text.trim()) return false;
+          if (question.parts.some((part) => !part.text.trim() || part.marks <= 0)) return false;
+          if (question.parts.length === 0 && question.marks <= 0) return false;
+          if (question.type !== "mcq") return true;
+          const options = question.options ?? [];
+          return options.length >= 2 && new Set(options).size === options.length;
+        });
+      // "Attempt any 5 of 5" means nothing, and dropped questions can make that happen.
+      const attemptAny = section.attemptAny && section.attemptAny > 0 && section.attemptAny < questions.length ? section.attemptAny : null;
+      return { ...section, questions, attemptAny };
+    })
+    .filter((section) => section.questions.length > 0);
+  const written = reply.data.sections.reduce((sum, section) => sum + section.questions.length, 0);
+  const kept = sections.reduce((sum, section) => sum + section.questions.length, 0);
+  if (kept === 0) return errorResponse(502, "ai_failed", "Couldn't write questions right now. Please try again.");
 
-  const questions = await withTransaction(async (client) => {
+  const saved = await withTransaction(async (client) => {
     // Lock the assessment, so two requests at once can't use the same positions.
     await client.query(`SELECT 1 FROM assessments WHERE id = $1 FOR UPDATE`, [id]);
-    const rows = usable.map((question, index) => ({
-      topic_id: topics[question.topicNumber - 1]?.id ?? null,
-      type: question.type,
-      text: question.text.trim(),
-      options: question.type === "mcq" ? question.options : null,
-      answer: question.answer.trim(),
-      explanation: question.explanation.trim() || null,
-      difficulty: question.difficulty,
-      marks: cents(question.marks) / 100,
-      offset: index + 1,
-    }));
-    // One insert for all rows: the list goes in as one JSON value and Postgres unpacks it into rows.
-    const inserted = await client.query(
-      `INSERT INTO questions (assessment_id, topic_id, type, text, options, answer, explanation, difficulty, marks, status, source, position)
-       SELECT $1, q.topic_id, q.type, q.text, q.options, q.answer, q.explanation, q.difficulty, q.marks, 'draft', 'ai',
-              (SELECT COALESCE(MAX(position), 0) FROM questions WHERE assessment_id = $1) + q."offset"
-         FROM jsonb_to_recordset($2::jsonb) AS q(topic_id uuid, type text, text text, options jsonb, answer text,
-                                                 explanation text, difficulty text, marks numeric, "offset" integer)
-       RETURNING id, topic_id AS "topicId", type, text, options, answer, explanation, difficulty,
-                 marks::float8 AS marks, status, source, position`,
-      [id, JSON.stringify(rows)],
-    );
-    return inserted.rows.sort((a, b) => a.position - b.position);
+    const rows = [];
+    for (const section of sections) {
+      const inserted = await client.query(
+        `INSERT INTO paper_sections (assessment_id, title, instructions, attempt_any, position)
+         VALUES ($1, $2, $3, $4, (SELECT COALESCE(MAX(position), 0) + 1 FROM paper_sections WHERE assessment_id = $1))
+         RETURNING id, title, instructions, attempt_any AS "attemptAny", position`,
+        [id, section.title.trim(), section.instructions.trim(), section.attemptAny],
+      );
+      const questions = section.questions.map((question, index) => ({
+        topic_id: topics[question.topicNumber - 1]?.id ?? null,
+        type: question.type,
+        text: question.text.trim(),
+        options: question.type === "mcq" ? question.options : null,
+        parts: question.parts.length > 0 ? question.parts : null,
+        difficulty: question.difficulty,
+        // With parts, the total is always the sum of the parts, so the two can't disagree.
+        marks: question.parts.length > 0 ? question.parts.reduce((sum, part) => sum + cents(part.marks), 0) / 100 : cents(question.marks) / 100,
+        offset: index + 1,
+      }));
+      // One insert for all rows: the list goes in as one JSON value and Postgres unpacks it into rows.
+      const added = await client.query(
+        `INSERT INTO questions (assessment_id, section_id, topic_id, type, text, options, parts, difficulty, marks, status, source, position)
+         SELECT $1::uuid, $2::uuid, q.topic_id, q.type, q.text, q.options, q.parts, q.difficulty, q.marks, 'draft', 'ai',
+                (SELECT COALESCE(MAX(position), 0) FROM questions WHERE assessment_id = $1::uuid) + q."offset"
+           FROM jsonb_to_recordset($3::jsonb) AS q(topic_id uuid, type text, text text, options jsonb, parts jsonb,
+                                                   difficulty text, marks numeric, "offset" integer)
+         RETURNING id, section_id AS "sectionId", topic_id AS "topicId", type, text, options, parts, difficulty,
+                   marks::float8 AS marks, status, source, position`,
+        [id, inserted.rows[0].id, JSON.stringify(questions)],
+      );
+      rows.push({ ...inserted.rows[0], questions: added.rows.sort((a, b) => a.position - b.position) });
+    }
+    return rows;
   });
 
-  // Gemini can miss the total. We report it rather than change its marks: the teacher decides.
-  const marksTotal = questions.reduce((sum, question) => sum + cents(question.marks), 0) / 100;
-  return Response.json({ questions, targetMarks, marksTotal, dropped: reply.data.questions.length - usable.length }, { status: 201 });
+  // Gemini can miss the total or a topic's marks. We report it rather than change its work: the teacher decides.
+  const allQuestions = saved.flatMap((section) => section.questions.map((question: { marks: number }) => ({ ...question, attemptAny: section.attemptAny })));
+  const topicPlan = topics.map((topic) => ({
+    topicId: topic.id,
+    title: topic.title,
+    askedMarks: askedMarks.get(topic.id) ?? null,
+    writtenMarks:
+      allQuestions.filter((question) => question.topicId === topic.id).reduce((sum, question) => sum + cents(question.marks), 0) / 100,
+  }));
+  return Response.json(
+    { sections: saved, targetMarks, marksTotal: countableMarks(allQuestions), topicPlan, dropped: written - kept },
+    { status: 201 },
+  );
+}
+
+// The marks a student can really earn. In an "attempt any N" section only the N best-paid questions count,
+// so a paper showing 66 marks of questions can correctly be a 50-mark paper.
+function countableMarks(questions: { sectionId: string; attemptAny: number | null; marks: number }[]) {
+  const sections = new Map<string, typeof questions>();
+  for (const question of questions) sections.set(question.sectionId, [...(sections.get(question.sectionId) ?? []), question]);
+  let total = 0;
+  for (const section of sections.values()) {
+    const highestFirst = section.map((question) => cents(question.marks)).sort((a, b) => b - a);
+    const counted = highestFirst.slice(0, section[0].attemptAny ?? highestFirst.length);
+    total += counted.reduce((sum, marks) => sum + marks, 0);
+  }
+  return total / 100;
 }
 
 // 7.5 → 750. Whole numbers add up exactly; decimals don't.

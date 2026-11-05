@@ -6,10 +6,12 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 const newAssessment = z.object({
   name: z.string().trim().min(1, "Name is required.").max(100),
   maxMarks: z.number().positive("Must be more than 0.").max(1000),
+  // Lab work counts in the Lab column of the result sheet, everything else in Theory.
+  isLab: z.boolean().default(false),
 });
 
 // numeric columns arrive in JavaScript as text ("7.50"), so every mark is cast to float8 to get a real number.
-const assessmentColumns = `a.id, a.name, a.max_marks::float8 AS "maxMarks", a.position`;
+const assessmentColumns = `a.id, a.name, a.max_marks::float8 AS "maxMarks", a.is_lab AS "isLab", a.position`;
 
 // GET /api/v1/courses/<id>/assessments: the course's assessments in order, with how many marks are allocated
 // and, for each assessment, how many students already have a mark.
@@ -62,7 +64,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/courses/
   if (!parsed.success) {
     return errorResponse(400, "invalid_input", "Some fields are invalid.", z.flattenError(parsed.error).fieldErrors);
   }
-  const { name, maxMarks } = parsed.data;
+  const { name, maxMarks, isLab } = parsed.data;
 
   try {
     const result = await withTransaction(async (client) => {
@@ -83,10 +85,10 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/courses/
       }
 
       const inserted = await client.query(
-        `INSERT INTO assessments (course_id, name, max_marks, position)
-         VALUES ($1, $2, $3, COALESCE((SELECT MAX(position) FROM assessments WHERE course_id = $1), 0) + 1)
-         RETURNING id, name, max_marks::float8 AS "maxMarks", position`,
-        [courseId, name, maxMarks],
+        `INSERT INTO assessments (course_id, name, max_marks, is_lab, position)
+         VALUES ($1, $2, $3, $4, COALESCE((SELECT MAX(position) FROM assessments WHERE course_id = $1), 0) + 1)
+         RETURNING id, name, max_marks::float8 AS "maxMarks", is_lab AS "isLab", position`,
+        [courseId, name, maxMarks, isLab],
       );
       return { outcome: "ok", assessment: inserted.rows[0] } as const;
     });

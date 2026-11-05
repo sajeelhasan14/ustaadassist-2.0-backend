@@ -588,7 +588,7 @@ A limit on how many requests an API accepts. Google's free tier allows 20 reques
 
 ## Structured output (a schema for AI answers)
 
-Normally an AI replies in free text, which code can't rely on. With a schema we give it a form to fill in: these exact fields, of these types. It's the difference between "tell me about the question" and a printed form with boxes for Question, Answer and Marks. We still check the reply afterwards, because the form forces the shape, not the truth: a multiple-choice answer can still fail to match any option.
+Normally an AI replies in free text, which code can't rely on. With a schema we give it a form to fill in: these exact fields, of these types. It's the difference between "tell me about the question" and a printed form with boxes for Question, Options and Marks. We still check the reply afterwards, because the form forces the shape, not the truth: a multiple-choice question can still arrive with no options.
 
 ## Draft and approved (human in the loop)
 
@@ -596,7 +596,7 @@ AI work is treated like a junior assistant's work: useful, but someone responsib
 
 ## `jsonb`
 
-A Postgres column type that stores JSON. We use it for a question's `options`, because the list of choices is always read together with its question, so it doesn't need its own table.
+A Postgres column type that stores JSON. We use it for a question's `options` and `parts`, because they're always read together with their question, so they don't need their own table.
 
 ## `jsonb_to_recordset` (many rows in one insert)
 
@@ -605,3 +605,39 @@ Turns a JSON list into table rows inside a query. We send all generated question
 ## Thinking level
 
 Gemini can reason before it answers. More thinking means better work but a slower reply. Copying a student list uses `LOW`. Writing exam questions uses `MEDIUM`, because quality matters more there.
+
+## A paper as a tree
+
+A paper is stored as levels, each inside the one above: assessment → sections → questions → parts. Like a book: chapters hold pages, and pages hold paragraphs. Nothing fixes how many of each there are, so the same four levels hold a 10-question MCQ quiz (one untitled section) and a full final exam.
+
+## `ON DELETE CASCADE`
+
+A rule on a foreign key: when the parent row is deleted, its children go too. Delete a section and its questions disappear, like throwing away a folder with the papers inside. That's why deleting a section needs a warning in the app.
+
+## Countable marks ("attempt any N")
+
+A paper can show more marks than a student can earn. With 3 questions of 12 marks and "attempt any 2", the paper shows 36 but only 24 count. So we total each section by taking its N highest questions, the most a student could score. That's how a paper showing 66 marks is correctly a 50-mark paper.
+
+## Merge, then check
+
+An edit may send one field, but the rules depend on the whole question: "an MCQ needs options" can't be checked from `{ "type": "mcq" }` alone. So we read the saved question, lay the changes on top, and check the result. Like checking a form after correcting one box, not checking only the box.
+
+## One route, several formats (`?format=`)
+
+The result sheet, marksheet and attendance sheet each have one route that does the calculation, and `?format=pdf` or `?format=xlsx` only changes how the answer is wrapped. Like a restaurant serving the same dish on a plate or in a takeaway box: there's one kitchen, so the two can't disagree.
+
+## Worked out, not stored
+
+Results aren't saved anywhere. Every request recalculates them from the marks, so changing a mark changes the sheet at once, and there's no second copy that can go stale.
+
+## Storage bucket and signed link
+
+A bucket is a folder in the cloud for files, as a table is for rows. A **private** bucket has no public links. To open a file we ask for a **signed link**: a normal URL with a secret code that stops working after 10 minutes, like a visitor pass that expires, so a link copied into a group chat soon dies.
+
+## Storage policy
+
+A rule the storage service itself checks on every request: "this login may only touch files in the folder with its own id". The check sits below our API, so even a bug in our code couldn't hand one teacher's files to another.
+
+## Busy (503) vs out of quota (429)
+
+Two different failures from Gemini. **503** means Google's servers are overloaded for everyone right now, and it passes by itself. **429** means your key has used up its allowance. A paid key lifts the 429 limit and usually gets better priority, but even then requests can fail, which is why the app always needs a "try again" message.

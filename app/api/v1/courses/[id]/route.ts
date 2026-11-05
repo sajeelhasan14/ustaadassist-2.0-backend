@@ -8,6 +8,20 @@ const courseChanges = z
     code: z.string().trim().min(1, "Code can't be empty."),
     title: z.string().trim().min(1, "Title can't be empty."),
     totalMarks: z.number().positive().max(1000),
+    creditHours: z.string().trim().min(1, "Credit hours can't be empty.").max(10),
+    // Printed at the top of the result sheet. Sent as a whole; every line is optional.
+    resultHeader: z.object({
+      university: z.string().trim().max(200).optional(),
+      examination: z.string().trim().max(200).optional(),
+      faculty: z.string().trim().max(200).optional(),
+      programme: z.string().trim().max(200).optional(),
+      department: z.string().trim().max(200).optional(),
+      majorDepartment: z.string().trim().max(200).optional(),
+      className: z.string().trim().max(200).optional(),
+      year: z.string().trim().max(50).optional(),
+      semester: z.string().trim().max(50).optional(),
+      examDate: z.string().trim().max(100).optional(),
+    }),
   })
   .partial();
 
@@ -24,7 +38,7 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/v1/courses
   if (!parsed.success) {
     return errorResponse(400, "invalid_input", "Some fields are invalid.", z.flattenError(parsed.error).fieldErrors);
   }
-  const { code, title, totalMarks } = parsed.data;
+  const { code, title, totalMarks, creditHours, resultHeader } = parsed.data;
 
   if (totalMarks !== undefined) {
     const [course] = await query<{ allocated: number }>(
@@ -48,11 +62,14 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/v1/courses
       `UPDATE courses c
           SET code = COALESCE($1, c.code),
               title = COALESCE($2, c.title),
-              total_marks = COALESCE($5, c.total_marks)
+              total_marks = COALESCE($5, c.total_marks),
+              credit_hours = COALESCE($6, c.credit_hours),
+              result_header = COALESCE($7::jsonb, c.result_header)
          FROM semesters s
         WHERE c.id = $3 AND s.id = c.semester_id AND s.teacher_id = $4
-        RETURNING c.id, c.semester_id AS "semesterId", c.code, c.title, c.total_marks::float8 AS "totalMarks"`,
-      [code ?? null, title ?? null, id, teacherId, totalMarks ?? null],
+        RETURNING c.id, c.semester_id AS "semesterId", c.code, c.title, c.total_marks::float8 AS "totalMarks",
+                  c.credit_hours AS "creditHours", c.result_header AS "resultHeader"`,
+      [code ?? null, title ?? null, id, teacherId, totalMarks ?? null, creditHours ?? null, resultHeader ? JSON.stringify(resultHeader) : null],
     );
     if (!course) return notFound();
     return Response.json({ course });

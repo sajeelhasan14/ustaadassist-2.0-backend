@@ -8,6 +8,8 @@ const newCourse = z.object({
   title: z.string().trim().min(1, "Title is required."),
   // What the course is "out of". Most courses are 100.
   totalMarks: z.number().positive().max(1000).default(100),
+  // As printed on the result sheet.
+  creditHours: z.string().trim().min(1).max(10).default("3+0"),
 });
 
 // GET /api/v1/semesters/<id>/courses: the courses in one of the teacher's semesters.
@@ -20,7 +22,8 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/semesters
 
   // The JOIN to semesters is the ownership check: another teacher's semester gives an empty list.
   const courses = await query(
-    `SELECT c.id, c.semester_id AS "semesterId", c.code, c.title, c.total_marks::float8 AS "totalMarks"
+    `SELECT c.id, c.semester_id AS "semesterId", c.code, c.title, c.total_marks::float8 AS "totalMarks",
+            c.credit_hours AS "creditHours", c.result_header AS "resultHeader"
        FROM courses c
        JOIN semesters s ON s.id = c.semester_id
       WHERE c.semester_id = $1 AND s.teacher_id = $2
@@ -30,7 +33,8 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/semesters
   return Response.json({ courses });
 }
 
-// POST /api/v1/semesters/<id>/courses: add a course to a semester. Body: { code, title, totalMarks? (default 100) }
+// POST /api/v1/semesters/<id>/courses: add a course to a semester.
+// Body: { code, title, totalMarks? (default 100), creditHours? (default "3+0") }
 // Every new course also gets section "A", so most teachers never have to set up sections.
 export async function POST(request: Request, ctx: RouteContext<"/api/v1/semesters/[id]/courses">) {
   const teacherId = await getTeacherId(request);
@@ -43,7 +47,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/semester
   if (!parsed.success) {
     return errorResponse(400, "invalid_input", "Some fields are invalid.", z.flattenError(parsed.error).fieldErrors);
   }
-  const { code, title, totalMarks } = parsed.data;
+  const { code, title, totalMarks, creditHours } = parsed.data;
 
   try {
     // One statement, two inserts (a CTE): the course and its section "A" are saved together or not at all.
@@ -51,19 +55,19 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/semester
     // if it isn't, new_course is empty, so no section is inserted either.
     const [created] = await query(
       `WITH new_course AS (
-         INSERT INTO courses (semester_id, code, title, total_marks)
-         SELECT id, $2, $3, $5 FROM semesters WHERE id = $1 AND teacher_id = $4
-         RETURNING id, semester_id, code, title, total_marks
+         INSERT INTO courses (semester_id, code, title, total_marks, credit_hours)
+         SELECT id, $2, $3, $5, $6 FROM semesters WHERE id = $1 AND teacher_id = $4
+         RETURNING id, semester_id, code, title, total_marks, credit_hours
        ), new_section AS (
          INSERT INTO sections (course_id, name)
          SELECT id, 'A' FROM new_course
          RETURNING id, course_id, name
        )
        SELECT json_build_object('id', c.id, 'semesterId', c.semester_id, 'code', c.code, 'title', c.title,
-                                'totalMarks', c.total_marks::float8) AS course,
+                                'totalMarks', c.total_marks::float8, 'creditHours', c.credit_hours) AS course,
               json_build_object('id', s.id, 'courseId', s.course_id, 'name', s.name) AS section
          FROM new_course c JOIN new_section s ON s.course_id = c.id`,
-      [semesterId, code, title, teacherId, totalMarks],
+      [semesterId, code, title, teacherId, totalMarks, creditHours],
     );
     if (!created) return errorResponse(404, "not_found", "Semester not found.");
     return Response.json(created, { status: 201 });

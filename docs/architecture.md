@@ -48,7 +48,7 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `PATCH /api/v1/courses/<id>` | body: any of `{ code, title }` → `{ course }` |
 | `DELETE /api/v1/courses/<id>` | `204`, deletes its sections and topics too |
 | `GET /api/v1/courses/<id>/topics` | `{ topics: [{ id, title, position }] }`, in teaching order |
-| `POST /api/v1/courses/<id>/topics` | body `{ title }` → `201 { topic }`, added at the end |
+| `POST /api/v1/courses/<id>/topics` | body `{ title, classesNeeded? }` → `201 { topic }`, added at the end. Or `{ titles, spreadOver? }` → `201 { topics }`: many at once, all or nothing, sharing `spreadOver` classes between them |
 | `PUT /api/v1/courses/<id>/topics` | body `{ topicIds: [...] }` (every topic, new order) → `{ topics }` |
 | `PATCH /api/v1/topics/<id>` | body `{ title }` → `{ topic }` |
 | `DELETE /api/v1/topics/<id>` | `204`; the rest keep their order |
@@ -60,9 +60,27 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `POST /api/v1/sections/<id>/students` | body `{ rollNumber, fullName, fatherName?, email? }` → `201 { student, created }`; reuses an existing student with the same seat number; `409 seat_number_taken` (different name) / `409 in_other_section` (already in another section of this course) / `409 already_enrolled` |
 | `DELETE /api/v1/sections/<id>/students/<studentId>` | `204`; removes the enrollment, the student stays |
 | `POST /api/v1/students/extract` | multipart: `files` (1–10 PDF/photo/xlsx/xls/csv, ≤ 20 MB), optional `sectionId` → `{ list: { courseCode, courseTitle, classLabel, sectionName }, students: [{ row, rollNumber, fullName, fatherName, status, message }], warnings }`. **Saves nothing.** `502 ai_failed` if Gemini can't read it |
-| `GET /api/v1/assessments/<id>/questions` | `{ assessment, approvedMarks, draftMarks, questions }`, in order |
-| `POST /api/v1/assessments/<id>/questions` | body `{ type, text, options?, answer, explanation?, difficulty?, marks, topicId? }` → `201 { question }`, already approved |
-| `POST /api/v1/assessments/<id>/questions/generate` | body (all optional) `{ topicIds, count, types, difficulty, note }` → `201 { questions, targetMarks, marksTotal, dropped }`, saved as drafts. `502 ai_failed` if Gemini can't be reached |
+| `GET /api/v1/assessments/<id>/questions` | the paper: `{ assessment, approvedMarks, draftMarks, sections: [{ id, title, instructions, attemptAny, position, questions }] }`, in order |
+| `POST /api/v1/assessments/<id>/questions` | body `{ sectionId?, type, text, options?, parts?, difficulty?, marks?, topicId? }` → `201 { question }`, already approved. No `sectionId` = the last section |
+| `PATCH /api/v1/assessments/<id>/questions` | body `{ status: "approved" }` → `{ approved }`, approves every draft |
+| `DELETE /api/v1/assessments/<id>/questions` | clears the whole paper → `{ deleted }`. `?status=draft` clears only the drafts |
+| `POST /api/v1/assessments/<id>/questions/generate` | body (all optional) `{ instructions, topics: [{ id, marks? }] }` → `201 { sections, targetMarks, marksTotal, topicPlan, dropped }`, saved as drafts. `502 ai_failed` if Gemini can't be reached |
+| `PATCH /api/v1/questions/<id>` | any of `{ sectionId, type, text, options, parts, difficulty, marks, topicId, status }` → `{ question }`. `status` approves one question |
+| `DELETE /api/v1/questions/<id>` | `204` |
+| `POST /api/v1/assessments/<id>/sections` | body `{ title?, instructions?, attemptAny? }` → `201 { section }` |
+| `PATCH /api/v1/paper-sections/<id>` | any of `{ title, instructions, attemptAny }` → `{ section }`. `attemptAny: null` = all compulsory |
+| `DELETE /api/v1/paper-sections/<id>` | `204`; **its questions are deleted too** |
+| `PUT /api/v1/assessments/<id>/questions` | body `{ sections: [{ id, questionIds }] }` → `204`. New order for the whole paper; must list everything exactly once |
+| `POST /api/v1/questions/<id>/regenerate` | body (optional) `{ instructions }` → `{ question }`. Gemini rewrites this one question; type, topic and marks stay; it becomes a draft |
+| `GET /api/v1/assessments/<id>/questions?format=pdf&time=3 hours` | the printable paper. Approved questions only; `400 no_approved_questions` if there are none |
+| `GET /api/v1/sections/<id>/results` | the result sheet: `{ course, section, teacher, header, hasLab, theoryMax, labMax, summary, students: [{ theory, lab, total, totalInWords, percentage, grade, remarks, absent, missing }] }`. Add `?format=xlsx` or `?format=pdf` to download |
+| `GET /api/v1/sections/<id>/marks?format=xlsx` or `pdf` | the marksheet file |
+| `GET /api/v1/sections/<id>/attendance?format=xlsx` or `pdf` | the attendance sheet file: one column per class held |
+| `GET /api/v1/courses/<id>/materials` | `{ materials: [{ id, courseId, topicId, name, mimeType, sizeBytes, createdAt }] }`, newest first. `?topicId=` for one topic |
+| `POST /api/v1/courses/<id>/materials` | multipart: `file` (≤ 20 MB; PDF, Word, PowerPoint, Excel, text, image), `topicId?` → `201 { material }` |
+| `GET /api/v1/materials/<id>` | `{ url, expiresInSeconds }`, a link that stops working after 10 minutes |
+| `PATCH /api/v1/materials/<id>` | body `{ name?, topicId? }` → `{ material }` |
+| `DELETE /api/v1/materials/<id>` | `204`; removes the file and its row |
 
 | `POST /api/v1/assistant` | body `{ message, history? }` → `{ reply, toolsUsed }`. Reads data with tools, changes nothing. `502 ai_failed` if Gemini can't be reached |
 
@@ -112,8 +130,17 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `app/api/v1/assessments/[id]/route.ts` | `PATCH` rename / change max marks + `DELETE` (its marks go too) | Flutter app (later), PowerShell |
 | `app/api/v1/assessments/[id]/marks/route.ts` | `GET` class list with marks (`?sectionId=` optional) + `PUT` save marks for many students at once (`null` clears) | Flutter app (later), PowerShell |
 | `app/api/v1/sections/[id]/marks/route.ts` | `GET` the gradebook: students × assessments, total, % of course total, missing count | Flutter app (later), result sheet (later), PowerShell |
-| `app/api/v1/assessments/[id]/questions/route.ts` | `GET` an assessment's questions + `POST` add one the teacher wrote | Flutter app (later), PowerShell |
-| `app/api/v1/assessments/[id]/questions/generate/route.ts` | `POST` Gemini writes questions from the topics, saved as drafts | Flutter app (later), PowerShell |
+| `app/api/v1/assessments/[id]/questions/route.ts` | The whole paper: `GET` it, `POST` add your own question, `PATCH` approve all drafts, `DELETE` clear it | Flutter app (later), PowerShell |
+| `app/api/v1/assessments/[id]/questions/generate/route.ts` | `POST` Gemini writes a paper from the teacher's request and topic marks, saved as drafts | Flutter app (later), PowerShell |
+| `app/api/v1/questions/[id]/route.ts` | One question: `PATCH` edit, move or approve it, `DELETE` remove it | Flutter app (later), PowerShell |
+| `app/api/v1/assessments/[id]/sections/route.ts` | `POST` add a section to a paper | Flutter app (later), PowerShell |
+| `app/api/v1/paper-sections/[id]/route.ts` | One section: `PATCH` edit it, `DELETE` remove it with its questions | Flutter app (later), PowerShell |
+| `app/api/v1/questions/[id]/regenerate/route.ts` | `POST` Gemini rewrites one question in place | Flutter app (later), PowerShell |
+| `app/api/v1/sections/[id]/results/route.ts` | `GET` the result sheet, worked out from the marks, as JSON, Excel or PDF | Flutter app (later), PowerShell |
+| `app/api/v1/courses/[id]/materials/route.ts` | `GET` a course's files, `POST` upload one | Flutter app (later), PowerShell |
+| `app/api/v1/materials/[id]/route.ts` | One file: `GET` an expiring link, `PATCH` rename or move, `DELETE` | Flutter app (later), PowerShell |
+| `docs/flows/results.md` | Trace + rules for results and every export | you |
+| `docs/flows/materials.md` | Trace + rules for uploading and opening files | you |
 | `docs/flows/assessments-marks.md` | Trace + test commands for assessments, marks entry and the gradebook | you |
 | `docs/flows/planner.md` | How the teaching plan is worked out (inside `GET /sections/<id>/sessions`) and how taught topics are recorded | you |
 | `app/api/v1/assistant/route.ts` | `POST` ask the assistant: checks login and input, then calls `runAgent` | Flutter chat (later), PowerShell |
@@ -152,7 +179,9 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `public.class_sessions` | class worth remembering: held, cancelled or extra | API (Step 2.3) | belongs to a section; unique per section + date + start time. **Ordinary future classes are not stored**, they are worked out |
 | `public.assessments` | anything marked: "Quiz 1", "Mid", "Final"… | API (Step 4.1) | belongs to a course (shared by its sections); `max_marks`; name unique per course; their sum may not exceed the course total (checked by the API) |
 | `public.marks` | one student's marks in one assessment | API (Step 4.2) | no row = not entered (≠ 0); `marks <= max_marks` checked by the API |
-| `public.questions` | question on an assessment | API (Step 5.1) | belongs to an assessment; `status` draft/approved, `source` ai/manual; `topic_id` optional, cleared if the topic is deleted; multiple choice must have `options` |
+| `public.materials` | a file uploaded to a course | API (Step 7.1) | belongs to a course, optionally a topic (cleared if the topic is deleted); the file itself is in the private `materials` storage bucket, inside a folder named after the teacher's id |
+| `public.paper_sections` | a part of a paper: "Section B: attempt any 4" | API (Step 5.2) | belongs to an assessment; `title` and `instructions` may be empty (a plain list is one untitled section); `attempt_any` empty = all compulsory |
+| `public.questions` | question on a paper. Questions only, no answers | API (Step 5.1) | belongs to a section; `type` is free text, only `mcq` is special and must have `options`; `parts` JSON list of `{ label, text, marks }`; `status` draft/approved, `source` ai/manual; `topic_id` optional, cleared if the topic is deleted |
 | `public.session_topics` | topic taught in a class | attendance `PUT` with `topicIds` (Step 3.1) | links class_sessions ↔ topics (one class can cover 2 topics; one topic can take several classes) |
 | `public.attendance` | one student's mark at one held class | API (Step 2.4) | `present` true/false; replaced as a whole each time the class is saved |
 

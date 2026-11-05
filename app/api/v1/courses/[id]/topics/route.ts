@@ -8,6 +8,12 @@ const newTopic = z.object({
   classesNeeded: z.int().min(1).max(50).default(1),
 });
 
+// A whole outline at once, pasted in one go. spreadOver = the classes available, shared out across the topics.
+const newTopics = z.object({
+  titles: z.array(z.string().trim().min(1, "A topic can't be empty.").max(300)).min(1).max(100),
+  spreadOver: z.int().min(1).max(1000).optional(),
+});
+
 // The complete outline in its new order: every topic id of the course, each exactly once.
 const newOrder = z.object({
   topicIds: z.array(z.uuid("Each item must be a topic id.")),
@@ -34,7 +40,8 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/courses/[
   return Response.json({ topics });
 }
 
-// POST /api/v1/courses/<id>/topics: add a topic at the end of the outline. Body: { title, classesNeeded? }
+// POST /api/v1/courses/<id>/topics: add to the end of the outline.
+// Body: { title, classesNeeded? } for one topic, or { titles, spreadOver? } for many at once.
 export async function POST(request: Request, ctx: RouteContext<"/api/v1/courses/[id]/topics">) {
   const teacherId = await getTeacherId(request);
   if (!teacherId) return errorResponse(401, "unauthorized", "Missing or invalid login token.");
@@ -42,7 +49,36 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/courses/
   const { id: courseId } = await ctx.params;
   if (!z.uuid().safeParse(courseId).success) return courseNotFound();
 
-  const parsed = newTopic.safeParse(await request.json().catch(() => null));
+  const body = await request.json().catch(() => null);
+
+  // Many topics: one statement, so they're all saved or none are.
+  if (body?.titles !== undefined) {
+    const many = newTopics.safeParse(body);
+    if (!many.success) {
+      return errorResponse(400, "invalid_input", "Some fields are invalid.", z.flattenError(many.error).fieldErrors);
+    }
+    const { titles, spreadOver } = many.data;
+    // 32 classes over 10 topics: every topic gets 3, and the first 2 get one more. Never less than 1.
+    const each = Math.floor((spreadOver ?? 0) / titles.length);
+    const extra = (spreadOver ?? 0) % titles.length;
+    const classes = titles.map((_, index) => Math.min(50, Math.max(1, each + (index < extra ? 1 : 0))));
+
+    // WITH ORDINALITY numbers the rows 1, 2, 3…, which keeps the pasted order.
+    const added = await query<{ position: number }>(
+      `INSERT INTO topics (course_id, title, position, classes_needed)
+       SELECT c.id, item.title, (SELECT COALESCE(MAX(position), 0) FROM topics WHERE course_id = c.id) + item.number, item.classes
+         FROM courses c
+         JOIN semesters s ON s.id = c.semester_id
+        CROSS JOIN unnest($2::text[], $3::int[]) WITH ORDINALITY AS item(title, classes, number)
+        WHERE c.id = $1 AND s.teacher_id = $4
+       RETURNING id, title, position, classes_needed AS "classesNeeded"`,
+      [courseId, titles, classes, teacherId],
+    );
+    if (added.length === 0) return courseNotFound();
+    return Response.json({ topics: added.sort((a, b) => a.position - b.position) }, { status: 201 });
+  }
+
+  const parsed = newTopic.safeParse(body);
   if (!parsed.success) {
     return errorResponse(400, "invalid_input", "Some fields are invalid.", z.flattenError(parsed.error).fieldErrors);
   }
