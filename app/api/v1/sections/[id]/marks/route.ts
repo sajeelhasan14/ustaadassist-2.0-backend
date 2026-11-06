@@ -70,7 +70,12 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/
     return Response.json({
       totalMarks: course.totalMarks,
       allocated: Math.round(assessments.reduce((sum, assessment) => sum + assessment.maxMarks, 0) * 100) / 100,
-      assessments,
+      // average = the class's mean as a % of this assessment's marks. null until someone has a mark in it.
+      assessments: assessments.map((assessment, index) => {
+        const entered = rows.flatMap((row) => row.marks[index] ?? []);
+        const mean = entered.reduce((sum, mark) => sum + mark, 0) / entered.length;
+        return { ...assessment, average: entered.length > 0 ? Math.round((mean / assessment.maxMarks) * 1000) / 10 : null };
+      }),
       students: rows,
     });
   }

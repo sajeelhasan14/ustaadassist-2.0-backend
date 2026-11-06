@@ -54,7 +54,13 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/
     const percentage = row.marked > 0 ? Math.round((row.present / row.marked) * 1000) / 10 : null;
     return { ...row, percentage, shortage: percentage !== null && percentage < min };
   });
-  if (format === null) return Response.json({ held: section.held, min, students });
+  if (format === null) {
+    // The whole section's attendance: every present mark ÷ every mark. null until a class has been marked.
+    const presentMarks = rows.reduce((sum, row) => sum + row.present, 0);
+    const allMarks = rows.reduce((sum, row) => sum + row.marked, 0);
+    const average = allMarks > 0 ? Math.round((presentMarks / allMarks) * 1000) / 10 : null;
+    return Response.json({ held: section.held, min, average, students });
+  }
 
   // The file needs every class, not just the totals. Dates as text, so timezones can't shift them.
   const classes = await query<{ id: string; date: string }>(

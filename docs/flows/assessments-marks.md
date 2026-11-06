@@ -63,7 +63,7 @@ Students **left out** of the list are not touched, so the app can send only the 
 ```
 GET /api/v1/sections/<sectionId>/marks
    → { totalMarks: 120, allocated: 110,
-       assessments: [ { id, name: "Quiz 1", maxMarks: 10 }, { …"Mid" }, … ],
+       assessments: [ { id, name: "Quiz 1", maxMarks: 10, average: 72.5 }, { …"Mid" }, … ],   ← average: class mean as a % of maxMarks, null until someone has a mark
        students: [ { id, rollNumber, fullName,
                      marks: [7.5, null, 41.25, null],      ← same order as "assessments"; null = not entered
                      total: 48.75,                          ← sum of the entered marks

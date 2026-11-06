@@ -105,11 +105,12 @@ Saving again replaces the marks, so fixing a mistake is the same call.
 
 ```
 GET /api/v1/sections/<sectionId>/attendance?min=75
-   → { "held": 3, "min": 75,
+   → { "held": 3, "min": 75, "average": 83.3,
        "students": [ { id, rollNumber, fullName, present: 1, marked: 3, percentage: 33.3, shortage: true } ] }
 ```
 
 - `marked` = held classes this student has a mark in. **percentage = present ÷ marked**, so a student enrolled late isn't counted absent for classes before they joined.
+- `average` is the whole section: every present mark ÷ every mark, `null` until a class is marked. The app's dashboard shows it.
 - `percentage` is `null` until the first class is marked. `shortage` = below `min` (default 75).
 - Marks from a class that was later cancelled are ignored (only `held` classes count).
 

@@ -82,6 +82,43 @@ Run with the real agent and real Gemini, against a stand-in API returning made-u
 
 **Not tested yet**, because the daily quota ran out: the fixed rule above, plain text with no bold, a failing tool, private data ("what's Bilal's phone number?"), an unrelated request, and a full run over HTTP with a real login.
 
+## The tools (all read-only)
+
+| Tool | Reads | Answers things like |
+|---|---|---|
+| `get_classes_on_date` | `/today` | What classes do I have tomorrow? |
+| `list_courses` | `/semesters`, their courses, their sections | Which courses do I teach? Also finds the ids for every other tool |
+| `get_assessments` | `/courses/<id>/assessments` | How many marks are still unallocated? |
+| `get_materials` | `/courses/<id>/materials` | What have I uploaded? (file names only, it can't read inside) |
+| `get_off_days` | `/off-days` | When is the next holiday? |
+| `get_paper` | `/assessments/<id>/questions` | Is the Mid paper approved yet? |
+| `get_students` | `/sections/<id>/students` | How many students are in Section A? |
+| `get_attendance` | `/sections/<id>/attendance` | Who is short on attendance? |
+| `get_plan` | `/sections/<id>/sessions` | Am I behind? What did I teach last class? |
+| `get_marks` | `/sections/<id>/marks` | What did Omar get in the Mid? |
+| `get_results` | `/sections/<id>/results` | How many students failed? |
+
+Most questions take two tool rounds: `list_courses` to find the id, then the tool that holds the answer.
+
+Three tools change the route's reply before Gemini sees it:
+
+- **`get_marks`** labels every mark with its assessment's name. The route sends a bare list lined up by position, and Gemini could match a number to the wrong assessment.
+- **`get_plan`** trims each class to what a question needs, because a semester can have about 50 classes.
+- **`get_results`** leaves out the printed sheet header, which no question needs.
+
+## Test results (2026-11-07)
+
+Real tools, with a stand-in API returning made-up data.
+
+| Case | Result |
+|---|---|
+| Tool checks: sections included, marks labelled, null stays null, classes trimmed, header dropped, bad id refused, names unique | 7 of 7 pass |
+| "Who is short on attendance in SE-454?" (real Gemini) | Right tools, correct answer, 5 s |
+| "Am I behind in Software Testing?" (real Gemini) | Right tools, correct answer, 5 s |
+| "What did Omar get in the Mid?" (real Gemini) | **Not tested:** the first model was out of quota (429), the other two busy (503) |
+
+The stand-in data was written by hand from reading the routes, so the tools still need a run against the real API with a real login.
+
 ## Try it (PowerShell, in `backend/`, dev server running)
 
 Use the login from [semesters.md](semesters.md) for `$auth`, then:
