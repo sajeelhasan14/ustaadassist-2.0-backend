@@ -12,6 +12,10 @@ type StoredSession = {
 type Topic = { sectionId: string; id: string; title: string; position: number; classesNeeded: number; classesTaught: number };
 type SessionTopic = { id: string; title: string };
 
+// One absence out of fewer classes than this already drops a student below 75%, so warning earlier would flag
+// everyone who missed a single class. The app uses the same number after saving attendance.
+const MIN_CLASSES_FOR_ALERT = 4;
+
 // GET /api/v1/today?date=YYYY-MM-DD: the teacher's classes on one day, across all sections, in time order.
 // date is optional (default: today in Karachi). Same rules as the class calendar: timetable − off days + stored classes.
 // Each class also has its topic: what was taught if it's marked, otherwise the next topic from the plan.
@@ -139,7 +143,46 @@ export async function GET(request: Request) {
     });
   }
 
-  return Response.json({ date, weekday, today: date === today, offDay: offDay ?? null, classes: result });
+  // Which sections have students below the teacher's line. Same sum as GET /sections/<id>/attendance: held classes
+  // only, rounded to one decimal before comparing. Sections with nobody short aren't listed.
+  const [teacher] = await query<{ minAttendance: number }>(
+    `SELECT min_attendance::float8 AS "minAttendance" FROM teachers WHERE id = $1`,
+    [teacherId],
+  );
+  const min = teacher?.minAttendance ?? 75;
+  const short = await query<{ sectionId: string; below: number }>(
+    `WITH per_student AS (
+       SELECT e.section_id, count(*) FILTER (WHERE a.present) AS present, count(*) AS marked
+         FROM enrollments e
+         JOIN class_sessions cs ON cs.section_id = e.section_id AND cs.status = 'held'
+         JOIN attendance a ON a.session_id = cs.id AND a.student_id = e.student_id
+        WHERE e.section_id = ANY($1::uuid[])
+        GROUP BY e.section_id, e.student_id
+     )
+     SELECT section_id AS "sectionId", count(*)::int AS below
+       FROM per_student
+      WHERE marked >= $3 AND round(present * 100.0 / marked, 1) < $2
+      GROUP BY section_id`,
+    [sectionIds, min, MIN_CLASSES_FOR_ALERT],
+  );
+  const attendanceAlerts = short.map(({ sectionId, below }) => {
+    const section = sections.find((one) => one.id === sectionId)!;
+    return { sectionId, sectionName: section.name, courseId: section.courseId, courseCode: section.courseCode, below, min };
+  });
+
+  // Assessments with a date from this day on. Most have no date, so this is often empty, and that's fine.
+  const comingUp = await query(
+    `SELECT a.id, a.name, a.held_on::text AS date, c.id AS "courseId", c.code AS "courseCode"
+       FROM assessments a
+       JOIN courses c ON c.id = a.course_id
+       JOIN semesters s ON s.id = c.semester_id
+      WHERE s.teacher_id = $1 AND a.held_on >= $2
+      ORDER BY a.held_on, a.name
+      LIMIT 5`,
+    [teacherId, date],
+  );
+
+  return Response.json({ date, weekday, today: date === today, offDay: offDay ?? null, classes: result, attendanceAlerts, comingUp });
 }
 
 // The teacher id inside a valid "Authorization: Bearer <token>" header, or null.

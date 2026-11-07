@@ -8,10 +8,12 @@ const assessmentChanges = z
     name: z.string().trim().min(1, "Name can't be empty.").max(100),
     maxMarks: z.number().positive("Must be more than 0.").max(1000),
     isLab: z.boolean(),
+    // null removes the date.
+    date: z.iso.date("Use the format YYYY-MM-DD.").nullable(),
   })
   .partial();
 
-// PATCH /api/v1/assessments/<id>: rename an assessment, change its max marks, or mark it as lab work.
+// PATCH /api/v1/assessments/<id>: rename an assessment, change its max marks or date, or mark it as lab work.
 // maxMarks can't push the course over its total, or go below a mark that's already entered.
 export async function PATCH(request: Request, ctx: RouteContext<"/api/v1/assessments/[id]">) {
   const teacherId = await getTeacherId(request);
@@ -24,7 +26,7 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/v1/assessm
   if (!parsed.success) {
     return errorResponse(400, "invalid_input", "Some fields are invalid.", z.flattenError(parsed.error).fieldErrors);
   }
-  const { name, maxMarks, isLab } = parsed.data;
+  const { name, maxMarks, isLab, date } = parsed.data;
 
   try {
     const result = await withTransaction(async (client) => {
@@ -52,10 +54,11 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/v1/assessm
       }
 
       const updated = await client.query(
-        `UPDATE assessments SET name = COALESCE($1, name), max_marks = COALESCE($2, max_marks), is_lab = COALESCE($4, is_lab)
+        `UPDATE assessments SET name = COALESCE($1, name), max_marks = COALESCE($2, max_marks), is_lab = COALESCE($4, is_lab),
+                held_on = CASE WHEN $5 THEN $6::date ELSE held_on END
           WHERE id = $3
-          RETURNING id, name, max_marks::float8 AS "maxMarks", is_lab AS "isLab", position`,
-        [name ?? null, maxMarks ?? null, id, isLab ?? null],
+          RETURNING id, name, max_marks::float8 AS "maxMarks", is_lab AS "isLab", position, held_on::text AS date`,
+        [name ?? null, maxMarks ?? null, id, isLab ?? null, date !== undefined, date ?? null],
       );
       return { outcome: "ok", assessment: updated.rows[0] } as const;
     });

@@ -17,7 +17,7 @@ tables `courses.total_marks`, `assessments`, `marks`
 ## 1. Assessments
 
 ```
-POST /api/v1/courses/<courseId>/assessments   { "name": "Quiz 1", "maxMarks": 10 }
+POST /api/v1/courses/<courseId>/assessments   { "name": "Quiz 1", "maxMarks": 10, "date"?: "2026-11-20" }
  1. token → 401;  Zod: name not blank, maxMarks > 0 → 400
  2. transaction: course yours? (FOR UPDATE: two adds at once can't both take the last marks)  → 404
       allocated + maxMarks > course total → 400 over_total "Only 40 of 100 marks are left"
@@ -26,13 +26,15 @@ POST /api/v1/courses/<courseId>/assessments   { "name": "Quiz 1", "maxMarks": 10
 201 { "assessment": { id, name, maxMarks, position } }
 
 GET /api/v1/courses/<courseId>/assessments
-   → { totalMarks: 100, allocated: 60, unallocated: 40, students: 62,
-       assessments: [ { id, name, maxMarks, position, marksEntered: 58 } ] }      ← "58 of 62 entered"
+   → { courseCode, totalMarks: 100, allocated: 60, unallocated: 40, students: 62,
+       assessments: [ { id, name, maxMarks, position, date, marksEntered: 58 } ] }      ← "58 of 62 entered"
 
-PATCH  /api/v1/assessments/<id>   { "name"?, "maxMarks"? }
+PATCH  /api/v1/assessments/<id>   { "name"?, "maxMarks"?, "date"? }      date: null removes it
        maxMarks over what's left → 400 over_total;  below a mark already entered → 400 below_marks
 DELETE /api/v1/assessments/<id>   → 204 (its marks are deleted too, and its marks become free again)
 ```
+
+**Why is the date optional?** A teacher adds an assessment whenever they like, and nothing has to be planned ahead. The date is stored in `held_on`, which is empty for most assessments. A date only makes the assessment appear under Coming up on Home.
 
 **Why refuse going over the total?** Otherwise assessments could add up to 120 in a course out of 100, and a student could end at 110%. To make room, the teacher lowers an assessment or raises the course total (`PATCH /courses/<id> { "totalMarks": 120 }`).
 

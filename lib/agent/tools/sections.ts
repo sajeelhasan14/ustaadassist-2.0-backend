@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineTool } from "../types";
+import { defineTool, type Stat } from "../types";
 
 // Every tool here reads one section, so they all take the same input.
 const input = z.object({ sectionId: z.uuid().describe("The section's id, from list_courses.") });
@@ -14,7 +14,7 @@ type Gradebook = {
 type Sessions = {
   today: string;
   summary: unknown;
-  plan: unknown;
+  plan: { topicsDone: number; topicsLeft: number; classesShort: number };
   sessions: { date: string; startTime: string; status: string; extra: boolean; note: string | null; present: number; absent: number; offDayName: string | null; topics: { title: string }[] }[];
 };
 
@@ -47,8 +47,14 @@ export const getPlan = defineTool({
   input,
   run: async ({ sectionId }, api) => {
     const { today, summary, plan, sessions } = (await api(`/sections/${sectionId}/sessions`)) as Sessions;
+    const stats: Stat[] = [
+      { value: `${plan.topicsDone}/${plan.topicsDone + plan.topicsLeft}`, label: "TOPICS DONE", tone: "normal" },
+      { value: `${plan.classesShort}`, label: "BEHIND", tone: plan.classesShort > 0 ? "warning" : "normal" },
+      { value: `${plan.topicsLeft}`, label: "LEFT", tone: "good" },
+    ];
     return {
       today,
+      stats,
       summary,
       plan,
       classes: sessions.map((session) => ({

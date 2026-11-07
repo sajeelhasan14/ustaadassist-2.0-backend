@@ -36,7 +36,7 @@ runAgent()     contents = history + message
    └─ round 2: askGemini(...)
          Gemini: no tool, just text → that's the answer
    │
-reply          { reply: "...", toolsUsed: ["get_classes_on_date"] }
+reply          { reply: "...", toolsUsed: ["get_classes_on_date"], proposals: [], stats: [] }
 ```
 
 ## Rules built in
@@ -45,7 +45,7 @@ reply          { reply: "...", toolsUsed: ["get_classes_on_date"] }
 - **A tool error goes back to Gemini**, so it can tell the teacher instead of crashing. This also covers tools that don't exist: Gemini does sometimes invent one.
 - **Gemini's arguments are checked** by the tool's Zod `input` before the tool runs.
 - **The token never reaches Gemini.** Only tool results do, so they contain the teacher's student data.
-- **The agent only reads.** No tool changes anything yet.
+- **The agent only reads.** It can prepare a change, but only the app can send one, after the teacher taps Confirm.
 
 ## Adding a tool
 
@@ -59,7 +59,7 @@ The description matters most: it's the only thing Gemini reads to decide when to
 | Case | Response |
 |---|---|
 | No or bad token | `401 unauthorized` |
-| Empty or too long message | `400 invalid_input` |
+| Empty or too long message, or a `courseId`/`sectionId` that isn't a real id | `400 invalid_input` |
 | Every Gemini model failed | `502 ai_failed` |
 
 ## Limits
@@ -106,6 +106,65 @@ Three tools change the route's reply before Gemini sees it:
 - **`get_plan`** trims each class to what a question needs, because a semester can have about 50 classes.
 - **`get_results`** leaves out the printed sheet header, which no question needs.
 
+## Changes: propose, then Confirm
+
+Gemini never changes anything. The `propose_` tools in `lib/agent/tools/proposals.ts` check the request against real data and describe the change. The app shows that with a Confirm button.
+
+| Tool | The change it prepares | It refuses when |
+|---|---|---|
+| `propose_cancel_class` | `POST /sections/<id>/sessions` with status cancelled | No class that day, the class isn't planned, or two classes that day and no time given |
+| `propose_extra_class` | `POST /sections/<id>/sessions` | The end time isn't after the start time |
+| `propose_add_assessment` | `POST /courses/<id>/assessments` | Not enough marks left, or the name is taken |
+| `propose_assessment_date` | `PATCH /assessments/<id>` | The assessment isn't in that course |
+| `propose_off_day` | `POST /off-days` | The end date is before the start date |
+| `propose_attendance_line` | `PATCH /me` | The number is outside 0 to 100 |
+
+```
+"Cancel my class on 10 November"
+   │
+Gemini        calls propose_cancel_class { sectionId, date }
+   │
+proposals.ts  reads the calendar: is there one planned class that day? (else an error goes back to Gemini)
+              builds { title, detail, method, path, body } from the checked values
+   │
+run-agent.ts  collects the proposal beside the reply
+   │
+the app       shows "Cancel class · SE-454 · Section A · Tue 10 Nov · 09:00" with Not now and Confirm
+   │  tap Confirm
+the app       sends POST /sections/<id>/sessions with the teacher's own token
+   │
+the route     runs all its normal checks, and the class is cancelled
+```
+
+- **Gemini can't show one thing and send another.** The title, detail and request are all built by our code from the same checked values. Gemini's words are only the sentence above the card.
+- **The route checks again.** Confirm uses the normal routes, so a class held in the meantime still gets its normal answer.
+- **Deleting isn't offered.** Students, marks and courses can't be removed from the chat. The assistant says so and points to the app.
+
+## Numbers under a reply
+
+`get_plan` also returns `stats`: topics done, classes behind and topics left. `run-agent.ts` passes them to the app as tiles. They appear on any question that used `get_plan`, even one that was only about a past class.
+
+## Page awareness
+
+The app can send `courseId` and `sectionId` beside the message, so "who is short?" means the course the teacher has open.
+
+```
+POST /api/v1/assistant   { message: "Who is short?", courseId: "...", sectionId: "..." }
+   │
+route.ts            both must be real ids (else 400)
+   │
+runAgent()          passes { courseId, sectionId } to buildInstructions()
+   │
+instructions.ts     pageRules() adds an "Open page" part to Gemini's rules
+   │
+Gemini              calls get_attendance straight away, with no list_courses round
+```
+
+- **Home sends neither id,** so `pageRules()` adds nothing and the assistant works from `list_courses`.
+- **Naming another course still works.** The rules tell Gemini to answer about the course the teacher named.
+- **Ids go in the instructions, not the teacher's message,** so they never appear in the chat history.
+- **Another teacher's id gets nothing.** The tools use the teacher's own token, so the route replies "not found".
+
 ## Test results (2026-11-07)
 
 Real tools, with a stand-in API returning made-up data.
@@ -115,9 +174,22 @@ Real tools, with a stand-in API returning made-up data.
 | Tool checks: sections included, marks labelled, null stays null, classes trimmed, header dropped, bad id refused, names unique | 7 of 7 pass |
 | "Who is short on attendance in SE-454?" (real Gemini) | Right tools, correct answer, 5 s |
 | "Am I behind in Software Testing?" (real Gemini) | Right tools, correct answer, 5 s |
-| "What did Omar get in the Mid?" (real Gemini) | **Not tested:** the first model was out of quota (429), the other two busy (503) |
+| "What did Omar get in the Mid?" from a course page (real Gemini) | `get_marks` only, 4 s. Correctly said not entered, not zero |
+| Same question from Home (real Gemini) | `list_courses` then `get_marks`, 4 s. Same answer |
+| Page rules: Home adds none, a course page adds both ids | Pass |
+| "Who is short on attendance?" from a course page (real Gemini) | **Not tested:** all three models were busy or timed out on that attempt |
 
-The stand-in data was written by hand from reading the routes, so the tools still need a run against the real API with a real login.
+Later the same day, with the propose_ tools:
+
+| Case | Result |
+|---|---|
+| 14 tool checks: each refusal above, the exact request built, no date sent when none given | All pass |
+| "Cancel my class on 10 November" (real Gemini) | `propose_cancel_class`, said ready to confirm, not done |
+| "Add a presentation worth 10 marks" (real Gemini) | `propose_add_assessment`, no invented date |
+| "How far am I in this course?" (real Gemini) | `get_plan`, correct, three tiles |
+| "Delete all my students" (real Gemini) | Refused, no tool used |
+
+**Not tested yet:** a bad id over HTTP (the 400), naming a different course from a course page, confirming a change against the real API. The stand-in data was written by hand from reading the routes, so the tools still need a run against the real API with a real login.
 
 ## Try it (PowerShell, in `backend/`, dev server running)
 

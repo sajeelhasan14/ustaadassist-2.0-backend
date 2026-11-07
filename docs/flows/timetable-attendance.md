@@ -111,7 +111,7 @@ GET /api/v1/sections/<sectionId>/attendance?min=75
 
 - `marked` = held classes this student has a mark in. **percentage = present ÷ marked**, so a student enrolled late isn't counted absent for classes before they joined.
 - `average` is the whole section: every present mark ÷ every mark, `null` until a class is marked. The app's dashboard shows it.
-- `percentage` is `null` until the first class is marked. `shortage` = below `min` (default 75).
+- `percentage` is `null` until the first class is marked. `shortage` = below `min`. Leave `?min` out to use the teacher's own line (`teachers.min_attendance`, default 75, set with `PATCH /me` or on the Me screen).
 - Marks from a class that was later cancelled are ignored (only `held` classes count).
 
 ## Tested (real HTTP calls, temporary teacher, deleted afterwards)

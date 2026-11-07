@@ -34,6 +34,21 @@ GET /api/v1/today?date=2026-11-03    (any day, e.g. tomorrow)
 
 **The planner rule appears twice:** it's in the class calendar and here, 3 lines each. It's kept inline (flat code) with a comment pointing to [planner.md](planner.md). Change both if the rule changes.
 
+## Attendance alerts and Coming up
+
+The same reply also carries two lists for Home.
+
+```
+attendanceAlerts: [ { sectionId, sectionName, courseId, courseCode, below: 2, min: 75 } ]
+comingUp:         [ { id, name, date, courseId, courseCode } ]
+```
+
+- **`attendanceAlerts`** lists sections with students below the teacher's line. It uses the same sum as `GET /sections/<id>/attendance`: held classes only, rounded to one decimal, then compared.
+- **A student needs 4 marked classes first** (`MIN_CLASSES_FOR_ALERT`). With fewer, one absence already falls below 75%, so everyone who missed a single class would be flagged.
+- **`comingUp`** lists up to 5 assessments dated from this day on, soonest first. Most assessments have no date, so this is often empty, and the app then shows nothing.
+
+Tested 2026-11-07 on throwaway temporary tables: exactly 75% isn't below 75, a cancelled class doesn't count, a section with 2 classes gives no alert, changing the line changes the count, a decimal line works, undated and past assessments stay out, and another teacher sees nothing. Not yet run over HTTP.
+
 ## Tested (real HTTP calls, temporary teacher, deleted afterwards)
 
 SE-454 A: Mon 09:00 + Mon 14:00, topics Arrays → Linked lists → Stacks (Arrays taught 26 Oct). CS-201 A: Mon 11:00 + Thu 09:00, topic Trees.

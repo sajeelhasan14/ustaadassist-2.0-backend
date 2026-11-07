@@ -8,10 +8,12 @@ const newAssessment = z.object({
   maxMarks: z.number().positive("Must be more than 0.").max(1000),
   // Lab work counts in the Lab column of the result sheet, everything else in Theory.
   isLab: z.boolean().default(false),
+  // Optional, like every date on an assessment: most are added with no date at all.
+  date: z.iso.date("Use the format YYYY-MM-DD.").optional(),
 });
 
 // numeric columns arrive in JavaScript as text ("7.50"), so every mark is cast to float8 to get a real number.
-const assessmentColumns = `a.id, a.name, a.max_marks::float8 AS "maxMarks", a.is_lab AS "isLab", a.position`;
+const assessmentColumns = `a.id, a.name, a.max_marks::float8 AS "maxMarks", a.is_lab AS "isLab", a.position, a.held_on::text AS date`;
 
 // GET /api/v1/courses/<id>/assessments: the course's assessments in order, with how many marks are allocated
 // and, for each assessment, how many students already have a mark.
@@ -23,8 +25,8 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/courses/[
   if (!z.uuid().safeParse(courseId).success) return courseNotFound();
 
   // students = everyone enrolled in any section of the course (each student is in only one of them).
-  const [course] = await query<{ totalMarks: number; students: number }>(
-    `SELECT c.total_marks::float8 AS "totalMarks",
+  const [course] = await query<{ code: string; totalMarks: number; students: number }>(
+    `SELECT c.code, c.total_marks::float8 AS "totalMarks",
             (SELECT count(*) FROM enrollments e JOIN sections sec ON sec.id = e.section_id WHERE sec.course_id = c.id)::int AS students
        FROM courses c JOIN semesters s ON s.id = c.semester_id
       WHERE c.id = $1 AND s.teacher_id = $2`,
@@ -43,6 +45,7 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/courses/[
   );
   const allocated = cents(assessments.reduce((sum, assessment) => sum + assessment.maxMarks, 0)) / 100;
   return Response.json({
+    courseCode: course.code,
     totalMarks: course.totalMarks,
     allocated,
     unallocated: cents(course.totalMarks - allocated) / 100,
@@ -51,7 +54,7 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/courses/[
   });
 }
 
-// POST /api/v1/courses/<id>/assessments: add an assessment at the end. Body: { name, maxMarks }
+// POST /api/v1/courses/<id>/assessments: add an assessment at the end. Body: { name, maxMarks, isLab?, date? }
 // Refused if it would take the course over its total (e.g. 60 of 100 used, a 50-mark Final → 400).
 export async function POST(request: Request, ctx: RouteContext<"/api/v1/courses/[id]/assessments">) {
   const teacherId = await getTeacherId(request);
@@ -64,7 +67,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/courses/
   if (!parsed.success) {
     return errorResponse(400, "invalid_input", "Some fields are invalid.", z.flattenError(parsed.error).fieldErrors);
   }
-  const { name, maxMarks, isLab } = parsed.data;
+  const { name, maxMarks, isLab, date } = parsed.data;
 
   try {
     const result = await withTransaction(async (client) => {
@@ -85,10 +88,10 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/courses/
       }
 
       const inserted = await client.query(
-        `INSERT INTO assessments (course_id, name, max_marks, is_lab, position)
-         VALUES ($1, $2, $3, $4, COALESCE((SELECT MAX(position) FROM assessments WHERE course_id = $1), 0) + 1)
-         RETURNING id, name, max_marks::float8 AS "maxMarks", is_lab AS "isLab", position`,
-        [courseId, name, maxMarks, isLab],
+        `INSERT INTO assessments (course_id, name, max_marks, is_lab, held_on, position)
+         VALUES ($1, $2, $3, $4, $5, COALESCE((SELECT MAX(position) FROM assessments WHERE course_id = $1), 0) + 1)
+         RETURNING id, name, max_marks::float8 AS "maxMarks", is_lab AS "isLab", position, held_on::text AS date`,
+        [courseId, name, maxMarks, isLab, date ?? null],
       );
       return { outcome: "ok", assessment: inserted.rows[0] } as const;
     });

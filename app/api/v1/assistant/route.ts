@@ -10,9 +10,12 @@ const question = z.object({
     .array(z.object({ role: z.enum(["user", "assistant"]), text: z.string().min(1).max(8000) }))
     .max(40)
     .default([]),
+  // Which course the teacher is looking at, if any. They go into Gemini's instructions, so only real ids are allowed.
+  courseId: z.uuid().optional(),
+  sectionId: z.uuid().optional(),
 });
 
-// POST /api/v1/assistant: ask the assistant something. Body: { message, history? }
+// POST /api/v1/assistant: ask the assistant something. Body: { message, history?, courseId?, sectionId? }
 // This file only handles the request. The agent itself lives in lib/agent/.
 export async function POST(request: Request) {
   const header = request.headers.get("authorization") ?? "";
@@ -26,7 +29,8 @@ export async function POST(request: Request) {
 
   try {
     const api = createApiGet(new URL(request.url).origin, token);
-    return Response.json(await runAgent(parsed.data.message, parsed.data.history, api));
+    const { message, history, courseId, sectionId } = parsed.data;
+    return Response.json(await runAgent(message, history, api, { courseId, sectionId }));
   } catch (error) {
     console.error("Assistant failed:", error);
     return errorResponse(502, "ai_failed", "The assistant isn't available right now. Please try again.");

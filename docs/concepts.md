@@ -641,3 +641,7 @@ A rule the storage service itself checks on every request: "this login may only 
 ## Busy (503) vs out of quota (429)
 
 Two different failures from Gemini. **503** means Google's servers are overloaded for everyone right now, and it passes by itself. **429** means your key has used up its allowance. A paid key lifts the 429 limit and usually gets better priority, but even then requests can fail, which is why the app always needs a "try again" message.
+
+## Proposal (confirm before changing)
+
+The AI prepares a change but can't carry it out, like a clerk who fills in a form and leaves it on your desk to sign. Nothing happens until the teacher taps Confirm. This matters because an AI can misunderstand, and a misunderstood "cancel Tuesday" would otherwise cancel a real class.

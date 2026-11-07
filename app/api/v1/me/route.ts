@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { query } from "@/lib/db";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -17,7 +18,8 @@ export async function GET(request: Request) {
 
   // 3. Load the teacher, with the email from Supabase's own users table.
   const [teacher] = await query(
-    `SELECT t.id, t.full_name AS "fullName", u.email, t.created_at AS "createdAt"
+    `SELECT t.id, t.full_name AS "fullName", u.email, t.created_at AS "createdAt",
+            t.min_attendance::float8 AS "minAttendance"
        FROM teachers t
        JOIN auth.users u ON u.id = t.id
       WHERE t.id = $1`,
@@ -29,7 +31,33 @@ export async function GET(request: Request) {
   return Response.json({ teacher });
 }
 
+// PATCH /api/v1/me: change the teacher's own settings. Body: { minAttendance } (0 to 100)
+export async function PATCH(request: Request) {
+  const header = request.headers.get("authorization") ?? "";
+  const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
+  if (!token) return errorResponse(401, "unauthorized", "Missing Authorization: Bearer token.");
+
+  const supabase = await createSupabaseServerClient();
+  const { data } = await supabase.auth.getClaims(token);
+  const teacherId = data?.claims.sub;
+  if (!teacherId) return errorResponse(401, "unauthorized", "Invalid or expired token.");
+
+  const parsed = z
+    .object({ minAttendance: z.number().min(0, "Must be 0 or more.").max(100, "Must be 100 or less.") })
+    .safeParse(await request.json().catch(() => null));
+  if (!parsed.success) {
+    return errorResponse(400, "invalid_input", "Some fields are invalid.", z.flattenError(parsed.error).fieldErrors);
+  }
+
+  const [teacher] = await query(
+    `UPDATE teachers SET min_attendance = $1 WHERE id = $2 RETURNING min_attendance::float8 AS "minAttendance"`,
+    [parsed.data.minAttendance, teacherId],
+  );
+  if (!teacher) return errorResponse(404, "teacher_not_found", "No teacher profile for this account.");
+  return Response.json({ teacher });
+}
+
 // Every API error has the same shape, so the app can handle them all the same way.
-function errorResponse(status: number, code: string, message: string) {
-  return Response.json({ error: { code, message } }, { status });
+function errorResponse(status: number, code: string, message: string, fields?: object) {
+  return Response.json({ error: { code, message, fields } }, { status });
 }

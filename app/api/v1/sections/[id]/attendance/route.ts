@@ -7,7 +7,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 // GET /api/v1/sections/<id>/attendance?min=75: each student's attendance in this section.
 // percentage = present ÷ classes the student was marked in (so a student who joined late isn't counted absent
-// for classes before they joined). shortage = below `min` percent (default 75).
+// for classes before they joined). shortage = below `min` percent (default: the teacher's own line, set on the Me screen).
 // Add &format=xlsx or &format=pdf to download the attendance sheet: one column per class held.
 export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/[id]/attendance">) {
   const teacherId = await getTeacherId(request);
@@ -16,23 +16,26 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/
   const { id: sectionId } = await ctx.params;
   if (!z.uuid().safeParse(sectionId).success) return sectionNotFound();
 
-  const min = z.coerce.number().min(0).max(100).catch(75).parse(new URL(request.url).searchParams.get("min") ?? 75);
+  // undefined, not null: z.coerce.number() would turn null into 0. A missing or bad ?min uses the teacher's line.
+  const minParam = z.coerce.number().min(0).max(100).safeParse(new URL(request.url).searchParams.get("min") ?? undefined);
 
   const format = new URL(request.url).searchParams.get("format");
   if (format !== null && format !== "xlsx" && format !== "pdf") {
     return errorResponse(400, "invalid_input", "Some fields are invalid.", { format: ["Use xlsx or pdf, or leave it out."] });
   }
 
-  const [section] = await query<{ held: number; name: string; code: string; title: string }>(
+  const [section] = await query<{ held: number; name: string; code: string; title: string; minAttendance: number }>(
     `SELECT (SELECT count(*) FROM class_sessions WHERE section_id = sec.id AND status = 'held')::int AS held,
-            sec.name, c.code, c.title
+            sec.name, c.code, c.title, t.min_attendance::float8 AS "minAttendance"
        FROM sections sec
        JOIN courses c ON c.id = sec.course_id
        JOIN semesters s ON s.id = c.semester_id
+       JOIN teachers t ON t.id = s.teacher_id
       WHERE sec.id = $1 AND s.teacher_id = $2`,
     [sectionId, teacherId],
   );
   if (!section) return sectionNotFound();
+  const min = minParam.success ? minParam.data : section.minAttendance;
 
   // Only marks from held classes count (a class cancelled after marking keeps its rows, but they're ignored).
   const rows = await query<{ id: string; rollNumber: string; fullName: string; present: number; marked: number }>(

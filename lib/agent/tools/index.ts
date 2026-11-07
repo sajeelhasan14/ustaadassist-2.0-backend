@@ -1,5 +1,13 @@
 import type { AgentTool } from "../types";
 import { getAssessments, getMaterials, getOffDays, getPaper, listCourses } from "./courses";
+import {
+  proposeAddAssessment,
+  proposeAssessmentDate,
+  proposeAttendanceLine,
+  proposeCancelClass,
+  proposeExtraClass,
+  proposeOffDay,
+} from "./proposals";
 import { getAttendance, getMarks, getPlan, getResults, getStudents } from "./sections";
 import { getClassesOnDate } from "./today";
 
@@ -16,4 +24,10 @@ export const tools: AgentTool[] = [
   getPlan,
   getMarks,
   getResults,
+  proposeCancelClass,
+  proposeExtraClass,
+  proposeAddAssessment,
+  proposeAssessmentDate,
+  proposeOffDay,
+  proposeAttendanceLine,
 ];
