@@ -43,6 +43,7 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `POST /api/v1/semesters` | body `{ name, startDate, endDate }` → `201 { semester }` |
 | `PATCH /api/v1/semesters/<id>` | body: any of `{ name, startDate, endDate }` → `{ semester }` |
 | `DELETE /api/v1/semesters/<id>` | `204`, deletes its courses too |
+| `GET /api/v1/courses` | `{ courses: [{ id, semesterId, code, title, totalMarks, creditHours, resultHeader }] }`: **every** course the teacher has, newest semester first, then by title. The app's first screen (My courses) uses this. |
 | `GET /api/v1/semesters/<id>/courses` | `{ courses: [{ id, semesterId, code, title }] }`, by code; empty if the semester isn't yours |
 | `POST /api/v1/semesters/<id>/courses` | body `{ code, title }` → `201 { course, section }` (section "A" is created automatically); `404` if the semester isn't yours; `409` duplicate code |
 | `PATCH /api/v1/courses/<id>` | body: any of `{ code, title }` → `{ course }` |
@@ -97,6 +98,7 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `app/api/v1/me/route.ts` | `GET /api/v1/me`: checks the Bearer token, returns the teacher | Flutter app (later), `curl` |
 | `app/api/v1/semesters/route.ts` | `GET` list + `POST` create semesters | Flutter app (later), PowerShell |
 | `app/api/v1/semesters/[id]/route.ts` | `PATCH` edit + `DELETE` one semester (`[id]` = the id in the URL) | Flutter app (later), PowerShell |
+| `app/api/v1/courses/route.ts` | `GET` all of the teacher's courses, across semesters | Flutter My courses screen |
 | `app/api/v1/semesters/[id]/courses/route.ts` | `GET` list + `POST` add courses in one semester | Flutter app (later), PowerShell |
 | `app/api/v1/courses/[id]/route.ts` | `PATCH` edit + `DELETE` one course | Flutter app (later), PowerShell |
 | `docs/flows/courses.md` | Trace + test commands for the courses API | you |
