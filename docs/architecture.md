@@ -144,8 +144,8 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `docs/flows/assessments-marks.md` | Trace + test commands for assessments, marks entry and the gradebook | you |
 | `docs/flows/planner.md` | How the teaching plan is worked out (inside `GET /sections/<id>/sessions`) and how taught topics are recorded | you |
 | `app/api/v1/assistant/route.ts` | `POST` ask the assistant: checks login and input, then calls `runAgent` | Flutter chat (later), PowerShell |
-| `lib/agent/run-agent.ts` | `runAgent()`: the agent loop (ask Gemini, run tools, repeat) | `assistant/route.ts` |
-| `lib/agent/gemini.ts` | `askGemini()`: one round with Gemini, with model fallback | `run-agent.ts` |
+| `lib/agent/run-agent.ts` | `runAgent()`: the agent loop (ask the AI, run tools, repeat) | `assistant/route.ts` |
+| `lib/ai.ts` | `askAI()`: one question to the AI through the OpenAI SDK; key, address and models come from `.env.local`; tries each model in turn | `run-agent.ts`, `students/extract`, `questions/generate`, `questions/[id]/regenerate`. Also `aiIsOpenAI()` (the few differences between companies) and `answerShape()` (the fixed JSON shape) |
 | `lib/agent/instructions.ts` | `buildInstructions()`: the rules the agent follows | `run-agent.ts` |
 | `lib/agent/api-client.ts` | `createApiGet()`: reads our API with the teacher's token | `assistant/route.ts`, every tool |
 | `lib/agent/types.ts` | `AgentTool`, `ApiGet`, `defineTool()` | every tool, `run-agent.ts` |
@@ -180,6 +180,7 @@ Web pages carry the login in **cookies**. Flutter sends it as an `Authorization:
 | `public.assessments` | anything marked: "Quiz 1", "Mid", "Final"… | API (Step 4.1) | belongs to a course (shared by its sections); `max_marks`; name unique per course; their sum may not exceed the course total (checked by the API) |
 | `public.marks` | one student's marks in one assessment | API (Step 4.2) | no row = not entered (≠ 0); `marks <= max_marks` checked by the API |
 | `public.materials` | a file uploaded to a course | API (Step 7.1) | belongs to a course, optionally a topic (cleared if the topic is deleted); the file itself is in the private `materials` storage bucket, inside a folder named after the teacher's id |
+| `public.assistant_chats` | a saved assistant conversation | API (assistant, 2026-11-08) | belongs to a teacher (deleted with them); `title` = first question; `messages` JSON list of `{ role, text, stats?, at }`; Confirm cards are not kept; sorted by `updated_at`. RLS on. |
 | `public.paper_sections` | a part of a paper: "Section B: attempt any 4" | API (Step 5.2) | belongs to an assessment; `title` and `instructions` may be empty (a plain list is one untitled section); `attempt_any` empty = all compulsory |
 | `public.questions` | question on a paper. Questions only, no answers | API (Step 5.1) | belongs to a section; `type` is free text, only `mcq` is special and must have `options`; `parts` JSON list of `{ label, text, marks }`; `status` draft/approved, `source` ai/manual; `topic_id` optional, cleared if the topic is deleted |
 | `public.session_topics` | topic taught in a class | attendance `PUT` with `topicIds` (Step 3.1) | links class_sessions ↔ topics (one class can cover 2 topics; one topic can take several classes) |
@@ -233,5 +234,5 @@ One-time setup on a new computer: `npx supabase login`, then `npx supabase link 
 | Decimal marks compared in hundredths | In JavaScript 33.3 + 33.3 + 33.4 = 100.00000000000001. Every "over the total / above max" check compares `Math.round(x × 100)`, and Postgres stores `numeric(6,2)`. |
 | The agent lives in `lib/agent/`, not in its route | The one exception to "logic inside the route". It has several parts that change for different reasons, and its tools keep growing. Chosen by the user (2026-11-04). |
 | Agent tools call our own API with the teacher's token | No logic is copied, and every login and ownership check still applies. |
-| Gemini via `@google/genai`, with our own loop | Already installed, no agent framework to learn, and every step can be read. |
+| The AI via the OpenAI SDK (`openai`), with our own loop | Changed 2026-11-08 from `@google/genai`. Gemini accepts OpenAI's format at its own address, so one code path works with a Gemini key today and an OpenAI key later; only `.env.local` changes. No agent framework, every step can be read. |
 | Times are Karachi time | "Today" (for "class hasn't happened yet" and the calendar summary) uses `Asia/Karachi`, the university's timezone. |

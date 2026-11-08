@@ -1,16 +1,15 @@
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { z } from "zod";
+import { answerShape, askAI, readJsonReply } from "@/lib/ai";
 import { query } from "@/lib/db";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-// Tried in order. If one is overloaded, out of quota, too slow or unreachable, the next one is used.
-const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.8-flash"];
+// Per model. Writing takes longer than reading, so this is more than lib/ai.ts's default.
 const MODEL_TIME_LIMIT_MS = 60_000;
 
 // Optional: what the teacher didn't like, in their own words ("make it harder", "use a banking example").
 const regenerateRequest = z.object({ instructions: z.string().trim().max(1000).optional() });
 
-// The answer Gemini must give. The same schema is sent to Gemini (as JSON Schema) and then checks its reply.
+// The answer the AI must give. The same schema is sent to the AI (as JSON Schema) and then checks its reply.
 const generated = z.object({
   text: z.string().describe("The new question, exactly as a student would read it."),
   options: z.array(z.string()).nullable().describe("For mcq: exactly 4 choices, without A/B/C/D labels. Otherwise null."),
@@ -25,7 +24,7 @@ const instructions = `You replace one exam question for a university teacher, wh
 - Multiple choice: exactly 4 plausible options, no "all of the above" or "none of the above".
 - If the old question has parts, write the same number of parts.`;
 
-// POST /api/v1/questions/<id>/regenerate: Gemini replaces this one question. Body (optional): { instructions }
+// POST /api/v1/questions/<id>/regenerate: The AI replaces this one question. Body (optional): { instructions }
 // Its place, type, topic and marks stay. The new version is a draft, because the teacher hasn't checked it.
 export async function POST(request: Request, ctx: RouteContext<"/api/v1/questions/[id]/regenerate">) {
   const teacherId = await getTeacherId(request);
@@ -76,35 +75,23 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/question
     .filter(Boolean)
     .join("\n\n");
 
-  // The AI step: Gemini sees only the course, the topic and the paper. It never sees student data.
+  // The AI step: it sees only the course, the topic and the paper. It never sees student data.
+  // lib/ai.ts picks the company and model from .env.local, and tries the next model if one is busy.
   let answer: unknown;
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    let text: string | undefined;
-    for (const model of GEMINI_MODELS) {
-      try {
-        const response = await ai.models.generateContent({
-          model,
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          config: {
-            systemInstruction: instructions,
-            responseMimeType: "application/json",
-            responseJsonSchema: z.toJSONSchema(generated),
-            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
-            abortSignal: AbortSignal.timeout(MODEL_TIME_LIMIT_MS),
-          },
-        });
-        text = response.text;
-        break;
-      } catch (error) {
-        // Busy, out of quota, too slow, network hiccup: try the next model.
-        // But a bad request (400) or a bad key (401/403) would fail on every model, so stop here.
-        const status = (error as { status?: number }).status;
-        if (status === 400 || status === 401 || status === 403) throw error;
-        console.warn(`Gemini model ${model} failed (${status ?? (error as Error).name}), trying the next one.`);
-      }
-    }
-    answer = JSON.parse(text ?? "");
+    const completion = await askAI(
+      {
+        messages: [
+          { role: "system", content: instructions },
+          { role: "user", content: prompt },
+        ],
+        response_format: answerShape("question", generated),
+        // Unlike copying a list, writing a good question needs some reasoning.
+        reasoning_effort: "medium",
+      },
+      MODEL_TIME_LIMIT_MS,
+    );
+    answer = readJsonReply(completion);
   } catch (error) {
     console.error("Question regeneration failed:", error);
     return errorResponse(502, "ai_failed", "Couldn't write a new question right now. Please try again.");
@@ -130,7 +117,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/question
                 marks::float8 AS marks, status, source, position`,
     [text.trim(), question.type === "mcq" ? JSON.stringify(options) : null, newParts.length > 0 ? JSON.stringify(newParts) : null, difficulty, id],
   );
-  // Deleted while Gemini was writing.
+  // Deleted while the AI was writing.
   if (!updated) return notFound();
   return Response.json({ question: updated });
 }

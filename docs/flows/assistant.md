@@ -1,20 +1,23 @@
 # Flow: the assistant (agent)
 
 [app/api/v1/assistant/route.ts](../../app/api/v1/assistant/route.ts) ·
-[lib/agent/](../../lib/agent/)
+[lib/agent/](../../lib/agent/) ·
+[lib/ai.ts](../../lib/ai.ts)
 
-A teacher asks something in plain words. Gemini chooses tools, our code runs them, and Gemini answers from the results.
+A teacher asks something in plain words. The AI chooses tools, our code runs them, and the AI answers from the results.
+
+The AI is reached through the **OpenAI SDK** (since 2026-11-08). Today the key and address in `.env.local` point to Gemini; switching to OpenAI means changing `AI_API_KEY`, `AI_BASE_URL` and `AI_MODELS`, with no code change. See "OpenAI format" in [concepts.md](../concepts.md).
 
 ## The files
 
 | File | Job |
 |---|---|
 | `app/api/v1/assistant/route.ts` | The door: checks the login and the input, calls `runAgent`, replies |
-| `lib/agent/run-agent.ts` | The loop: ask Gemini → run its tools → give back the results → repeat |
-| `lib/agent/gemini.ts` | One round with Gemini: model order, time limit, fallback |
+| `lib/agent/run-agent.ts` | The loop: ask the AI → run its tools → give back the results → repeat |
+| `lib/ai.ts` | `askAI()`: one round with the AI through the OpenAI SDK: model order from `AI_MODELS`, 30 s per model, fallback. Shared by every AI feature |
 | `lib/agent/instructions.ts` | The rules the agent follows, in plain English |
 | `lib/agent/api-client.ts` | Reads our own API with the teacher's token |
-| `lib/agent/types.ts` | What a tool looks like; `defineTool` checks Gemini's arguments |
+| `lib/agent/types.ts` | What a tool looks like; `defineTool` checks the AI's arguments |
 | `lib/agent/tools/` | One file per tool; `index.ts` is the list |
 
 Normal routes keep their logic inside the route file. The agent is the one exception, chosen by the user: it has several parts that change for different reasons, and its tools will keep growing.
@@ -26,15 +29,16 @@ POST /api/v1/assistant   { message: "What classes do I have today?", history: []
    │
 route.ts       token valid? (else 401)  body valid? (else 400)
    │
-runAgent()     contents = history + message
+runAgent()     messages = system (the rules) + history + message
    │
-   ├─ round 1: askGemini(contents, instructions, tool list)
-   │     Gemini: "call get_classes_on_date"
+   ├─ round 1: askAI({ messages, tools })
+   │     AI: an assistant message with tool_calls: [get_classes_on_date, arguments as JSON text]
+   │     that message is kept exactly as it came (Gemini hides a thought signature in it)
    │     runTool → tool.run → api("/today") → GET /api/v1/today with the teacher's token
-   │     the result is added to contents
+   │     the result is added as { role: "tool", tool_call_id, content: JSON text }
    │
-   └─ round 2: askGemini(...)
-         Gemini: no tool, just text → that's the answer
+   └─ round 2: askAI(...)
+         AI: no tool_calls, just content → that's the answer
    │
 reply          { reply: "...", toolsUsed: ["get_classes_on_date"], proposals: [], stats: [] }
 ```
@@ -60,12 +64,16 @@ The description matters most: it's the only thing Gemini reads to decide when to
 |---|---|
 | No or bad token | `401 unauthorized` |
 | Empty or too long message, or a `courseId`/`sectionId` that isn't a real id | `400 invalid_input` |
-| Every Gemini model failed | `502 ai_failed` |
+| Every model in `AI_MODELS` failed | `502 ai_failed` (the backend terminal shows each model's status, e.g. `AI model gemini-3.5-flash failed (429)`) |
 
 ## Limits
 
 - **Free tier:** Google allows 20 requests a day per model on the free key, and each question uses 2 or more. That's under 10 questions a day: fine for a quick test, not for real use.
 - **Speed:** one round took from about 2 to 15 seconds in testing.
+
+## Test after the move to the OpenAI SDK (2026-11-08)
+
+Real Gemini through the OpenAI-style address, stand-in API with made-up data: the AI asked for `list_courses`, got the result back, and Gemini accepted the second round (so the thought signature went back correctly). 2.8 s. Not yet tried from the phone with a real login.
 
 ## Test results (2026-11-04)
 

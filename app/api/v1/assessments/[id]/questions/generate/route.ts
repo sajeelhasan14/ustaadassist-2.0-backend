@@ -1,16 +1,15 @@
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { z } from "zod";
+import { answerShape, askAI, readJsonReply } from "@/lib/ai";
 import { query, withTransaction } from "@/lib/db";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-// Tried in order. If one is overloaded, out of quota, too slow or unreachable, the next one is used.
-const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.8-flash"];
+// Per model. Writing a whole paper takes longer than reading, so this is more than lib/ai.ts's default.
 const MODEL_TIME_LIMIT_MS = 60_000;
 
 // Everything is optional, so one tap on "Generate" works.
 // instructions = whatever the teacher wants, in their own words: only MCQs, sections, parts, scenarios…
 // topics[].marks = roughly how many marks this topic should carry. Sent as a number, because
-// vague wording ("mostly testing") made Gemini skip the other topics completely.
+// vague wording ("mostly testing") made the AI skip the other topics completely.
 const generateRequest = z.object({
   instructions: z.string().trim().max(2000).optional(),
   topics: z
@@ -20,7 +19,7 @@ const generateRequest = z.object({
     .optional(),
 });
 
-// The answer Gemini must give. The same schema is sent to Gemini (as JSON Schema) and then checks its reply.
+// The answer the AI must give. The same schema is sent to the AI (as JSON Schema) and then checks its reply.
 const generated = z.object({
   sections: z.array(
     z.object({
@@ -54,7 +53,7 @@ const instructions = `You write exam papers for a university teacher, who will r
 - Multiple choice: exactly 4 plausible options, no "all of the above" or "none of the above".
 - Marks a student can earn must add up to the stated total. With "attempt any", count only the questions they attempt.`;
 
-// POST /api/v1/assessments/<id>/questions/generate: Gemini writes a paper, saved as drafts for the teacher to review.
+// POST /api/v1/assessments/<id>/questions/generate: The AI writes a paper, saved as drafts for the teacher to review.
 // Body (all optional): { instructions, topics: [{ id, marks? }] }. No topics = the ones already taught.
 export async function POST(request: Request, ctx: RouteContext<"/api/v1/assessments/[id]/questions/generate">) {
   const teacherId = await getTeacherId(request);
@@ -102,7 +101,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/assessme
   const taught = outline.filter((topic) => topic.taught);
   const topics = picked ? chosen : taught.length > 0 ? taught : outline;
 
-  // Existing questions: so Gemini doesn't repeat them, and to work out how many marks are still to fill.
+  // Existing questions: so the AI doesn't repeat them, and to work out how many marks are still to fill.
   const existing = await query<{ text: string; marks: number; status: string; sectionId: string; attemptAny: number | null }>(
     `SELECT q.text, q.marks::float8 AS marks, q.status, q.section_id AS "sectionId", ps.attempt_any AS "attemptAny"
        FROM questions q
@@ -116,7 +115,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/assessme
   // A full paper can still ask for more, as spares to swap in.
   const targetMarks = marksLeft > 0 ? marksLeft : assessment.maxMarks;
 
-  // Checked before Gemini, so a mistake here doesn't use up a request.
+  // Checked before the AI, so a mistake here doesn't use up a request.
   const topicMarksCents = topics.reduce((sum, topic) => sum + cents(askedMarks.get(topic.id) ?? 0), 0);
   if (topicMarksCents > cents(targetMarks)) {
     return errorResponse(400, "invalid_input", "Some fields are invalid.", {
@@ -136,36 +135,23 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/assessme
     .filter(Boolean)
     .join("\n\n");
 
-  // The AI step: Gemini sees only the course name, topic titles and old questions. It never sees student data.
+  // The AI step: it sees only the course name, topic titles and old questions. It never sees student data.
+  // lib/ai.ts picks the company and model from .env.local, and tries the next model if one is busy.
   let answer: unknown;
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    let text: string | undefined;
-    for (const model of GEMINI_MODELS) {
-      try {
-        const response = await ai.models.generateContent({
-          model,
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          config: {
-            systemInstruction: instructions,
-            responseMimeType: "application/json",
-            responseJsonSchema: z.toJSONSchema(generated),
-            // Unlike copying a list, writing good questions needs some reasoning.
-            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
-            abortSignal: AbortSignal.timeout(MODEL_TIME_LIMIT_MS),
-          },
-        });
-        text = response.text;
-        break;
-      } catch (error) {
-        // Busy, out of quota, too slow, network hiccup: try the next model.
-        // But a bad request (400) or a bad key (401/403) would fail on every model, so stop here.
-        const status = (error as { status?: number }).status;
-        if (status === 400 || status === 401 || status === 403) throw error;
-        console.warn(`Gemini model ${model} failed (${status ?? (error as Error).name}), trying the next one.`);
-      }
-    }
-    answer = JSON.parse(text ?? "");
+    const completion = await askAI(
+      {
+        messages: [
+          { role: "system", content: instructions },
+          { role: "user", content: prompt },
+        ],
+        response_format: answerShape("paper", generated),
+        // Unlike copying a list, writing good questions needs some reasoning.
+        reasoning_effort: "medium",
+      },
+      MODEL_TIME_LIMIT_MS,
+    );
+    answer = readJsonReply(completion);
   } catch (error) {
     console.error("Question generation failed:", error);
     return errorResponse(502, "ai_failed", "Couldn't write questions right now. Please try again.");
@@ -233,7 +219,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/assessme
     return rows;
   });
 
-  // Gemini can miss the total or a topic's marks. We report it rather than change its work: the teacher decides.
+  // The AI can miss the total or a topic's marks. We report it rather than change its work: the teacher decides.
   const allQuestions = saved.flatMap((section) => section.questions.map((question: { marks: number }) => ({ ...question, attemptAny: section.attemptAny })));
   const topicPlan = topics.map((topic) => ({
     topicId: topic.id,

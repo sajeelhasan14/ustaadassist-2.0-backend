@@ -12,12 +12,12 @@
     "db:status": "supabase migration list"
   },
   "dependencies": {
-    "@google/genai": "^2.32.0",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.118.0",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.9",
     "next": "16.4.3",
+    "openai": "^7.53.0",
     "pg": "^8.23.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",

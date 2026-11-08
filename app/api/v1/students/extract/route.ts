@@ -1,19 +1,19 @@
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import type { ChatCompletionContentPart } from "openai/resources/chat/completions";
 import * as XLSX from "xlsx";
 import { z } from "zod";
+import { aiIsOpenAI, answerShape, askAI, readJsonReply } from "@/lib/ai";
 import { query } from "@/lib/db";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-// Tried in order. If one is overloaded, out of quota, too slow or unreachable, the next one is used.
-const GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash"];
+// Per model. Reading several pages takes longer than lib/ai.ts's default.
 const MODEL_TIME_LIMIT_MS = 45_000;
 
 const MAX_FILES = 10;
-// Gemini accepts about 20 MB of files sent inside one request.
+// Gemini accepts about 20 MB of files inside one request (OpenAI 50 MB), so 20 MB works with both.
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 
 // Accepted files, by extension: phones and browsers report file types inconsistently (Windows often calls a CSV "Excel").
-// "document" files go to Gemini as they are; "sheet" files are turned into text first.
+// "document" files go to the AI as they are; "sheet" files are turned into text first.
 const fileTypes: Record<string, { kind: "document" | "sheet"; mimeType: string }> = {
   pdf: { kind: "document", mimeType: "application/pdf" },
   jpg: { kind: "document", mimeType: "image/jpeg" },
@@ -27,7 +27,7 @@ const fileTypes: Record<string, { kind: "document" | "sheet"; mimeType: string }
   csv: { kind: "sheet", mimeType: "" },
 };
 
-// The answer Gemini must give. The same schema is sent to Gemini (as JSON Schema) and then checks its reply.
+// The answer the AI must give. The same schema is sent to the AI (as JSON Schema) and then checks its reply.
 const extraction = z.object({
   courseCode: z.string().nullable().describe('Course code or number printed on the list, e.g. "SE-454". null if not printed.'),
   courseTitle: z.string().nullable().describe("Course name printed on the list. null if not printed."),
@@ -105,17 +105,27 @@ export async function POST(request: Request) {
     if (!section) return sectionNotFound();
   }
 
-  // Build what Gemini will read. Sheets become text, and that text is also kept to check Gemini's answer against.
-  const parts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[] = [];
+  // Build what the AI will read. Sheets become text, and that text is also kept to check the AI's answer against.
+  const parts: ChatCompletionContentPart[] = [];
   let sheetText = "";
   for (const file of files) {
     const type = fileTypes[file.name.split(".").pop()?.toLowerCase() ?? ""];
     if (!type) {
       return errorResponse(400, "unsupported_file", `"${file.name}" isn't a PDF, photo, Excel or CSV file.`);
     }
+    // OpenAI reads PNG, JPEG, WEBP and GIF photos, not the iPhone's HEIC. Gemini reads HEIC too.
+    if (type.mimeType.startsWith("image/hei") && aiIsOpenAI()) {
+      return errorResponse(400, "unsupported_file", `"${file.name}" is a HEIC photo. Please share it as JPG instead.`);
+    }
     const bytes = Buffer.from(await file.arrayBuffer());
     if (type.kind === "document") {
-      parts.push({ inlineData: { mimeType: type.mimeType, data: bytes.toString("base64") } });
+      const dataUrl = `data:${type.mimeType};base64,${bytes.toString("base64")}`;
+      // The two companies take a PDF differently: OpenAI as a "file" part, Gemini in the image field.
+      if (type.mimeType === "application/pdf" && aiIsOpenAI()) {
+        parts.push({ type: "file", file: { filename: file.name, file_data: dataUrl } });
+      } else {
+        parts.push({ type: "image_url", image_url: { url: dataUrl } });
+      }
       continue;
     }
     try {
@@ -127,7 +137,7 @@ export async function POST(request: Request) {
         (name) => `Sheet "${name}":\n${XLSX.utils.sheet_to_csv(workbook.Sheets[name], { blankrows: false })}`,
       ).join("\n\n");
       sheetText += text + "\n";
-      parts.push({ text: `File "${file.name}":\n${text}` });
+      parts.push({ type: "text", text: `File "${file.name}":\n${text}` });
     } catch {
       return errorResponse(400, "unreadable_file", `"${file.name}" couldn't be opened. Is it damaged?`);
     }
@@ -135,36 +145,22 @@ export async function POST(request: Request) {
   // Seat numbers can only be checked against the file when every file was a sheet (photos and PDFs have no text we keep).
   const canCheckAgainstFile = files.every((file) => fileTypes[file.name.split(".").pop()!.toLowerCase()].kind === "sheet");
 
-  // The AI step: Gemini reads the files and fills in the `extraction` shape. It never sees our database.
+  // The AI step: it reads the files and fills in the `extraction` shape. It never sees our database.
+  // lib/ai.ts picks the company and model from .env.local, and tries the next model if one is busy.
+  // Copying a list needs little reasoning, so lib/ai.ts's default "low" is kept.
   let answer: unknown;
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    let text: string | undefined;
-    for (const model of GEMINI_MODELS) {
-      try {
-        const response = await ai.models.generateContent({
-          model,
-          contents: [{ role: "user", parts }],
-          config: {
-            systemInstruction: instructions,
-            responseMimeType: "application/json",
-            responseJsonSchema: z.toJSONSchema(extraction),
-            // Copying a list needs little reasoning; low thinking answers much faster.
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            abortSignal: AbortSignal.timeout(MODEL_TIME_LIMIT_MS),
-          },
-        });
-        text = response.text;
-        break;
-      } catch (error) {
-        // Busy, out of quota, too slow, network hiccup: try the next model.
-        // But a bad request (400) or a bad key (401/403) would fail on every model, so stop here.
-        const status = (error as { status?: number }).status;
-        if (status === 400 || status === 401 || status === 403) throw error;
-        console.warn(`Gemini model ${model} failed (${status ?? (error as Error).name}), trying the next one.`);
-      }
-    }
-    answer = JSON.parse(text ?? "");
+    const completion = await askAI(
+      {
+        messages: [
+          { role: "system", content: instructions },
+          { role: "user", content: parts },
+        ],
+        response_format: answerShape("class_list", extraction),
+      },
+      MODEL_TIME_LIMIT_MS,
+    );
+    answer = readJsonReply(completion);
   } catch (error) {
     console.error("Student list extraction failed:", error);
     return errorResponse(502, "ai_failed", "Couldn't read the file right now. Please try again.");

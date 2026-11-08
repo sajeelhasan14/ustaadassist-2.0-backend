@@ -107,7 +107,7 @@ generate/route.ts
   ├─ SELECT assessment     ownership, plus maxMarks
   ├─ SELECT topics         outline; checks the picked topics are in this course
   ├─ SELECT questions      what exists, so countableMarks() gives the marks left
-  ├─ ai.models.generateContent   Gemini fills in the form
+  ├─ askAI() (lib/ai.ts)   the AI fills in the form (answerShape, reasoning medium, 60 s per model)
   ├─ filter                drops broken questions
   └─ withTransaction       INSERT paper_sections, INSERT questions (status 'draft')
   ▼ 201 { sections, topicPlan, ... }

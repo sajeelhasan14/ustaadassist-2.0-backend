@@ -477,7 +477,7 @@ JSON can only carry text, so files are sent as **multipart/form-data**: the requ
 
 ## Structured output (making AI answer in a fixed shape)
 
-Left alone, an AI answers in free text, which code can't rely on. With `responseMimeType: "application/json"` and `responseJsonSchema`, Gemini **must** answer as JSON that fits our schema. We write the schema once in Zod. `z.toJSONSchema(extraction)` turns it into the JSON Schema Gemini understands, and `extraction.safeParse(answer)` checks the reply with the same rules. `.describe("...")` adds a hint for each field.
+Left alone, an AI answers in free text, which code can't rely on. With `response_format` set by `answerShape()` in `lib/ai.ts` (OpenAI's "structured outputs", `strict: true`), the AI **must** answer as JSON that fits our schema. Gemini and OpenAI both accept it. We write the schema once in Zod. `z.toJSONSchema(extraction)` turns it into the JSON Schema the AI understands, and `extraction.safeParse(answer)` checks the reply with the same rules. `.describe("...")` adds a hint for each field.
 
 **Everyday example:** giving someone a printed form with boxes to fill in, instead of asking them to "write down the students".
 
@@ -495,7 +495,7 @@ AI services get overloaded (503), hit quota limits (429), answer very slowly or 
 
 ## AI "thinking" level
 
-Newer Gemini models reason step by step before answering. That helps hard problems but costs time. Copying names from a list is easy, so we ask for `ThinkingLevel.LOW`: same quality for this job, much faster.
+Newer AI models reason step by step before answering. That helps hard problems but costs time. Copying names from a list is easy, so we ask for `reasoning_effort: "low"`: same quality for this job, much faster. One OpenAI rule: its newer models allow tools in this format only with `"none"`, so `lib/ai.ts` uses that for the assistant on OpenAI.
 
 ## Unicode look-alikes and NFKC
 
@@ -596,7 +596,7 @@ AI work is treated like a junior assistant's work: useful, but someone responsib
 
 ## `jsonb`
 
-A Postgres column type that stores JSON. We use it for a question's `options` and `parts`, because they're always read together with their question, so they don't need their own table.
+A Postgres column type that stores JSON. We use it for a question's `options` and `parts`, because they're always read together with their question, so they don't need their own table. A saved assistant chat keeps its `messages` the same way: a chat is always opened whole.
 
 ## `jsonb_to_recordset` (many rows in one insert)
 
@@ -640,8 +640,28 @@ A rule the storage service itself checks on every request: "this login may only 
 
 ## Busy (503) vs out of quota (429)
 
-Two different failures from Gemini. **503** means Google's servers are overloaded for everyone right now, and it passes by itself. **429** means your key has used up its allowance. A paid key lifts the 429 limit and usually gets better priority, but even then requests can fail, which is why the app always needs a "try again" message.
+Two different failures from the AI. The backend terminal shows which one happened, e.g. `AI model gemini-3.5-flash failed (429)`. **503** means Google's servers are overloaded for everyone right now, and it passes by itself. **429** means your key has used up its allowance. A paid key lifts the 429 limit and usually gets better priority, but even then requests can fail, which is why the app always needs a "try again" message.
 
 ## Proposal (confirm before changing)
 
 The AI prepares a change but can't carry it out, like a clerk who fills in a form and leaves it on your desk to sign. Nothing happens until the teacher taps Confirm. This matters because an AI can misunderstand, and a misunderstood "cancel Tuesday" would otherwise cancel a real class.
+
+## SDK
+
+A ready-made library from the AI company that sends the web requests for you. Without it you write the `fetch` call, the headers and the error handling yourself. With it you write `client.chat.completions.create({...})` and get typed answers, automatic retries when the server is busy, and clear error types (for example a 429 becomes a `RateLimitError`). Like using a courier company instead of driving the parcel yourself: same parcel, less to manage.
+
+## OpenAI format (and "base URL")
+
+OpenAI's way of writing an AI request became a common standard: a list of `messages`, each with a `role` (`system` for the rules, `user`, `assistant`, `tool` for tool results), plus a list of `tools`. Google runs a second address for Gemini that understands this format: `https://generativelanguage.googleapis.com/v1beta/openai/`. The **base URL** is the address the SDK sends to. So one piece of code works with both companies, and switching means changing the key, the base URL and the model names in `.env.local`. Like a standard plug that fits two sockets.
+
+## Tool call id
+
+When the AI asks for several tools at once, each request has its own `id`. Every result we send back carries the same id as `tool_call_id`, so the AI knows which answer belongs to which question. Like numbered tokens at a shop counter.
+
+## Thought signature
+
+Gemini 3 models reason before they ask for a tool, and they put a hidden, encoded summary of that reasoning (a "thought signature") inside their reply. On the next round Gemini expects that reply back exactly as it was sent. If it's changed or missing, the request is rejected. That's why the agent pushes the AI's message back untouched instead of rebuilding it.
+
+## `store: false` (keeping chats out of the key owner's console)
+
+OpenAI can save each request and reply so the account owner can read them on the console's Logs page. `store: false` tells OpenAI not to. `lib/ai.ts` sends it whenever `AI_BASE_URL` is empty (that means OpenAI), so an office key's owners see only counts and cost, never the teacher's questions or student data. Gemini's OpenAI-style address rejects the field with a 400, so it's left out there. (OpenAI still keeps API data for up to about 30 days for abuse checks, inside OpenAI.)

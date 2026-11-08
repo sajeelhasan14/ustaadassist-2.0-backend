@@ -30,14 +30,16 @@ POST /api/v1/students/extract   (multipart/form-data: files = 1–10 files, sect
  2. no files / more than 10 / over 20 MB together → 400
  3. sectionId given but not yours → 404   (we also load its course code, to compare with the file)
  4. each file, by extension:
-      pdf, jpg, jpeg, png, webp, heic, heif → sent to Gemini as they are (base64)
+      pdf, jpg, jpeg, png, webp, heic, heif → sent to the AI as they are (base64 data link)
+        PDF: OpenAI takes it as a "file" part, Gemini in the image field (lib/ai.ts aiIsOpenAI() decides)
+        heic/heif with OpenAI → 400 unsupported_file "share it as JPG" (OpenAI doesn't read HEIC; Gemini does)
       xlsx, xls, csv → SheetJS turns every sheet into CSV text → sent as text, and the text is KEPT
       anything else → 400 unsupported_file
- 5. Gemini call:
-      systemInstruction = how to read class lists (any layout, join split pages, copy exactly, never invent)
-      responseJsonSchema = z.toJSONSchema(extraction) → it MUST answer in our JSON shape
-      thinking = LOW (faster), 45 s limit per model
-      models tried in order: gemini-3.8-flash → gemini-3.7-flash → gemini-3.5-flash
+ 5. askAI() in lib/ai.ts (OpenAI SDK; the company is whatever .env.local says):
+      system message = how to read class lists (any layout, join split pages, copy exactly, never invent)
+      response_format = answerShape("class_list", extraction) → it MUST answer in our JSON shape
+      reasoning = low (faster), 45 s limit per model
+      models tried in the order of AI_MODELS
         (next one on busy / quota / too slow / network error; stop on 400/401/403)
       all fail → 502 ai_failed
  6. extraction.safeParse(answer): the same Zod schema checks the reply → 502 if the shape is wrong
