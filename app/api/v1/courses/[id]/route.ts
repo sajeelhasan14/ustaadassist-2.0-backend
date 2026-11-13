@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { query } from "@/lib/db";
+import { DEFAULT_GRADE_SCALE, gradeScaleSchema } from "@/lib/grades";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 // What a valid "edit course" body looks like. Send only what changes.
@@ -9,6 +10,10 @@ const courseChanges = z
     title: z.string().trim().min(1, "Title can't be empty."),
     totalMarks: z.number().positive().max(1000),
     creditHours: z.string().trim().min(1, "Credit hours can't be empty.").max(10),
+    // Below this % a student is short of attendance. Each course has its own.
+    minAttendance: z.number().min(0, "Must be 0 or more.").max(100, "Must be 100 or less."),
+    // The course's grade bands, or null to go back to the default scale.
+    gradeScale: gradeScaleSchema.nullable(),
     // Printed at the top of the result sheet. Sent as a whole; every line is optional.
     resultHeader: z.object({
       university: z.string().trim().max(200).optional(),
@@ -25,7 +30,7 @@ const courseChanges = z
   })
   .partial();
 
-// PATCH /api/v1/courses/<id>: change a course's code, title and/or total marks.
+// PATCH /api/v1/courses/<id>: change a course's code, title, total marks, attendance line or grade scale.
 // The total can't go below the marks already given to its assessments.
 export async function PATCH(request: Request, ctx: RouteContext<"/api/v1/courses/[id]">) {
   const teacherId = await getTeacherId(request);
@@ -38,7 +43,7 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/v1/courses
   if (!parsed.success) {
     return errorResponse(400, "invalid_input", "Some fields are invalid.", z.flattenError(parsed.error).fieldErrors);
   }
-  const { code, title, totalMarks, creditHours, resultHeader } = parsed.data;
+  const { code, title, totalMarks, creditHours, resultHeader, minAttendance, gradeScale } = parsed.data;
 
   if (totalMarks !== undefined) {
     const [course] = await query<{ allocated: number }>(
@@ -64,12 +69,24 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/v1/courses
               title = COALESCE($2, c.title),
               total_marks = COALESCE($5, c.total_marks),
               credit_hours = COALESCE($6, c.credit_hours),
-              result_header = COALESCE($7::jsonb, c.result_header)
+              result_header = COALESCE($7::jsonb, c.result_header),
+              min_attendance = COALESCE($8, c.min_attendance),
+              -- $9 says whether gradeScale was sent at all; null then means "back to the default".
+              grade_scale = CASE WHEN $9 THEN $10::jsonb ELSE c.grade_scale END
          FROM semesters s
         WHERE c.id = $3 AND s.id = c.semester_id AND s.teacher_id = $4
         RETURNING c.id, c.semester_id AS "semesterId", c.code, c.title, c.total_marks::float8 AS "totalMarks",
-                  c.credit_hours AS "creditHours", c.result_header AS "resultHeader"`,
-      [code ?? null, title ?? null, id, teacherId, totalMarks ?? null, creditHours ?? null, resultHeader ? JSON.stringify(resultHeader) : null],
+                  c.credit_hours AS "creditHours", c.result_header AS "resultHeader",
+                  c.min_attendance::float8 AS "minAttendance", COALESCE(c.grade_scale, $11::jsonb) AS "gradeScale",
+                  c.grade_scale IS NULL AS "defaultGradeScale"`,
+      [
+        code ?? null, title ?? null, id, teacherId, totalMarks ?? null, creditHours ?? null,
+        resultHeader ? JSON.stringify(resultHeader) : null,
+        minAttendance ?? null,
+        gradeScale !== undefined,
+        gradeScale ? JSON.stringify(gradeScale) : null,
+        JSON.stringify(DEFAULT_GRADE_SCALE),
+      ],
     );
     if (!course) return notFound();
     return Response.json({ course });

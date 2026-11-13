@@ -3,22 +3,8 @@ import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import { z } from "zod";
 import { query } from "@/lib/db";
+import { DEFAULT_GRADE_SCALE, gradeFor, type GradeBand } from "@/lib/grades";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-
-// University of Karachi grade bands, from the real result sheets. Each row: the lowest percentage for that grade.
-const GRADES = [
-  [90, "A+"],
-  [85, "A"],
-  [80, "A-"],
-  [75, "B+"],
-  [71, "B"],
-  [68, "B-"],
-  [64, "C+"],
-  [61, "C"],
-  [57, "C-"],
-  [53, "D+"],
-  [50, "D"],
-] as const;
 
 type Header = {
   university?: string;
@@ -58,11 +44,12 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/
     creditHours: string;
     totalMarks: number;
     resultHeader: Header | null;
+    gradeScale: GradeBand[] | null;
     sectionName: string;
     teacherName: string;
   }>(
     `SELECT c.id, c.code, c.title, c.credit_hours AS "creditHours", c.total_marks::float8 AS "totalMarks",
-            c.result_header AS "resultHeader", sec.name AS "sectionName", t.full_name AS "teacherName"
+            c.result_header AS "resultHeader", c.grade_scale AS "gradeScale", sec.name AS "sectionName", t.full_name AS "teacherName"
        FROM sections sec
        JOIN courses c ON c.id = sec.course_id
        JOIN semesters s ON s.id = c.semester_id
@@ -146,7 +133,8 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/
       total: absent ? null : total,
       totalInWords: absent ? null : totalInWords(total),
       percentage: absent ? null : percentage,
-      grade: absent ? null : (GRADES.find(([lowest]) => percentage >= lowest)?.[1] ?? "F"),
+      // The course's own grade scale; a course that never changed it uses the default one.
+      grade: absent ? null : gradeFor(course.gradeScale ?? DEFAULT_GRADE_SCALE, percentage),
       remarks,
       absent,
       missing,

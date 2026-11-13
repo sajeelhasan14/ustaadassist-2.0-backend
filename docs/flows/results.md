@@ -1,5 +1,7 @@
 # Flow: results and exports
 
+> **Changed 2026-11-11:** the grade comes from the course's own scale (`courses.grade_scale`, edited in Course settings), or the default scale in `lib/grades.ts` when it was never changed. Below the lowest band is still F.
+
 [results/route.ts](../../app/api/v1/sections/[id]/results/route.ts) ·
 [marks/route.ts](../../app/api/v1/sections/[id]/marks/route.ts) ·
 [attendance/route.ts](../../app/api/v1/sections/[id]/attendance/route.ts) ·

@@ -1,5 +1,7 @@
 # Flow: holidays and off days
 
+> **Changed 2026-11-11: holidays belong to one course.** `GET /off-days?courseId=<id>` (was `?semesterId=`) and `POST /off-days` with `courseId` in the body. Each course has its own list; public holidays are added per course (`unique (course_id, holiday_key)`). A new course starts with the days the teacher already marked in their other courses for the same dates (`POST /semesters/<id>/courses` copies them, newest course's version wins). `PATCH`/`DELETE /off-days/<id>` are unchanged. Migration `20261111120000_course_settings.sql` copied every old teacher-wide day into each course it touched. Older text below describes the teacher-wide version.
+
 Files: [lib/holidays.ts](../../lib/holidays.ts) (date math) · [app/api/v1/off-days/route.ts](../../app/api/v1/off-days/route.ts) (GET, POST) ·
 [app/api/v1/off-days/[id]/route.ts](../../app/api/v1/off-days/[id]/route.ts) (PATCH, DELETE) · table `off_days`
 

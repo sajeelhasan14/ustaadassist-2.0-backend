@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { query } from "@/lib/db";
-import { addDays, builtInHolidays } from "@/lib/holidays";
+import { addDays, addPublicHolidays } from "@/lib/holidays";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const time = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use 24-hour time, e.g. 09:00 or 14:30.");
@@ -46,21 +46,8 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/
   );
   if (!semester) return sectionNotFound();
 
-  // Add the public holidays this teacher doesn't have yet (same as GET /off-days), so no class lands on Eid.
-  const holidays = builtInHolidays(semester.startDate, semester.endDate);
-  await query(
-    `INSERT INTO off_days (teacher_id, holiday_key, name, start_date, end_date, tentative)
-     SELECT $1::uuid, * FROM unnest($2::text[], $3::text[], $4::date[], $5::date[], $6::boolean[])
-     ON CONFLICT (teacher_id, holiday_key) DO NOTHING`,
-    [
-      teacherId,
-      holidays.map((holiday) => holiday.key),
-      holidays.map((holiday) => holiday.name),
-      holidays.map((holiday) => holiday.startDate),
-      holidays.map((holiday) => holiday.endDate),
-      holidays.map((holiday) => holiday.tentative),
-    ],
-  );
+  // Add the public holidays this course doesn't have yet (same as GET /off-days), so no class lands on Eid.
+  await addPublicHolidays(teacherId, semester.courseId, semester.startDate, semester.endDate);
 
   const slots = await query<Slot>(
     `SELECT weekday, to_char(start_time, 'HH24:MI') AS "startTime", to_char(end_time, 'HH24:MI') AS "endTime"
@@ -69,8 +56,8 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/
   );
   const offDays = await query<OffDay>(
     `SELECT name, start_date::text AS "startDate", end_date::text AS "endDate" FROM off_days
-      WHERE teacher_id = $1 AND NOT removed AND start_date <= $3 AND end_date >= $2`,
-    [teacherId, semester.startDate, semester.endDate],
+      WHERE course_id = $1 AND NOT removed AND start_date <= $3 AND end_date >= $2`,
+    [semester.courseId, semester.startDate, semester.endDate],
   );
   // count(...) FILTER (WHERE ...) counts only the rows that match, so one query gives both numbers.
   const stored = await query<StoredSession>(

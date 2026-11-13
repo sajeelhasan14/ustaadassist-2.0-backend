@@ -26,11 +26,10 @@ export async function GET(request: Request, ctx: RouteContext<"/api/v1/sections/
 
   const [section] = await query<{ held: number; name: string; code: string; title: string; minAttendance: number }>(
     `SELECT (SELECT count(*) FROM class_sessions WHERE section_id = sec.id AND status = 'held')::int AS held,
-            sec.name, c.code, c.title, t.min_attendance::float8 AS "minAttendance"
+            sec.name, c.code, c.title, c.min_attendance::float8 AS "minAttendance"
        FROM sections sec
        JOIN courses c ON c.id = sec.course_id
        JOIN semesters s ON s.id = c.semester_id
-       JOIN teachers t ON t.id = s.teacher_id
       WHERE sec.id = $1 AND s.teacher_id = $2`,
     [sectionId, teacherId],
   );

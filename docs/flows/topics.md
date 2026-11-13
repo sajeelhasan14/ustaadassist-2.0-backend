@@ -1,5 +1,7 @@
 # Flow: topics (the course outline)
 
+> **Added 2026-11-11: `POST /topics/extract`** reads a course's topics from a photo, scan, PDF or text file of its outline (multipart `files`, up to 10, 20 MB). The AI only reads; numbering, bullets and repeats are cleaned without AI; nothing is saved. The app puts the topics in the topics box, and the teacher saves them with `POST /courses/<id>/topics` as before. 422 `no_topics` when nothing was found.
+
 Files: [app/api/v1/courses/[id]/topics/route.ts](../../app/api/v1/courses/[id]/topics/route.ts) (GET, POST, PUT) ·
 [app/api/v1/topics/[id]/route.ts](../../app/api/v1/topics/[id]/route.ts) (PATCH, DELETE) · table `topics` · [lib/db.ts](../../lib/db.ts) `withTransaction`
 

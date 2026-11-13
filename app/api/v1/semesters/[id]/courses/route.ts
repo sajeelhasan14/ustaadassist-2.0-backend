@@ -55,21 +55,46 @@ export async function POST(request: Request, ctx: RouteContext<"/api/v1/semester
     // if it isn't, new_course is empty, so no section is inserted either.
     const [created] = await query(
       `WITH new_course AS (
-         INSERT INTO courses (semester_id, code, title, total_marks, credit_hours)
-         SELECT id, $2, $3, $5, $6 FROM semesters WHERE id = $1 AND teacher_id = $4
-         RETURNING id, semester_id, code, title, total_marks, credit_hours
+         INSERT INTO courses (semester_id, code, title, total_marks, credit_hours, min_attendance)
+         -- The attendance line starts as the one on the teacher's newest course, so it's set once, not per course.
+         SELECT id, $2, $3, $5, $6, COALESCE(
+                  (SELECT c.min_attendance FROM courses c JOIN semesters s2 ON s2.id = c.semester_id
+                    WHERE s2.teacher_id = $4 ORDER BY c.created_at DESC LIMIT 1),
+                  (SELECT min_attendance FROM teachers WHERE id = $4))
+           FROM semesters WHERE id = $1 AND teacher_id = $4
+         RETURNING id, semester_id, code, title, total_marks, credit_hours, min_attendance
        ), new_section AS (
          INSERT INTO sections (course_id, name)
          SELECT id, 'A' FROM new_course
          RETURNING id, course_id, name
        )
        SELECT json_build_object('id', c.id, 'semesterId', c.semester_id, 'code', c.code, 'title', c.title,
-                                'totalMarks', c.total_marks::float8, 'creditHours', c.credit_hours) AS course,
+                                'totalMarks', c.total_marks::float8, 'creditHours', c.credit_hours,
+                                'minAttendance', c.min_attendance::float8) AS course,
               json_build_object('id', s.id, 'courseId', s.course_id, 'name', s.name) AS section
          FROM new_course c JOIN new_section s ON s.course_id = c.id`,
       [semesterId, code, title, teacherId, totalMarks, creditHours],
     );
     if (!created) return errorResponse(404, "not_found", "Semester not found.");
+
+    // Holidays: a new course starts with the ones the teacher already marked in their other courses
+    // (the days they added, and public holidays as they moved, confirmed or deleted them), for any day inside
+    // this semester. Public holidays nobody has seen yet are added later by GET /off-days.
+    // DISTINCT ON keeps one copy when two courses have the same day: the newest course's.
+    await query(
+      `INSERT INTO off_days (teacher_id, course_id, name, start_date, end_date, holiday_key, tentative, removed)
+       SELECT DISTINCT ON (COALESCE(o.holiday_key, o.name || o.start_date || o.end_date))
+              $1::uuid, $2::uuid, o.name, o.start_date, o.end_date, o.holiday_key, o.tentative, o.removed
+         FROM off_days o
+         JOIN courses c ON c.id = o.course_id
+         JOIN semesters other ON other.id = c.semester_id
+         JOIN semesters target ON target.id = $3
+        WHERE o.teacher_id = $1 AND o.course_id <> $2
+          AND o.start_date <= target.end_date AND o.end_date >= target.start_date
+        ORDER BY COALESCE(o.holiday_key, o.name || o.start_date || o.end_date), c.created_at DESC
+       ON CONFLICT (course_id, holiday_key) DO NOTHING`,
+      [teacherId, (created as { course: { id: string } }).course.id, semesterId],
+    );
     return Response.json(created, { status: 201 });
   } catch (error) {
     // 23505 = unique rule broken: this semester already has a course with this code.

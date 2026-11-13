@@ -117,31 +117,31 @@ export const proposeAssessmentDate = defineTool({
 
 export const proposeOffDay = defineTool({
   name: "propose_off_day",
-  description: "Prepare adding a day or range of days with no classes, for the teacher to confirm. It applies to all their sections.",
-  input: z.object({ name: z.string().trim().min(1).max(100), startDate: z.iso.date(), endDate: z.iso.date().optional() }),
-  run: async ({ name, startDate, endDate }) => {
+  description: "Prepare adding a day or range of days with no classes to one course, for the teacher to confirm. Other courses keep their own holidays.",
+  input: z.object({ courseId: z.uuid(), name: z.string().trim().min(1).max(100), startDate: z.iso.date(), endDate: z.iso.date().optional() }),
+  run: async ({ courseId, name, startDate, endDate }) => {
     if (endDate && endDate < startDate) throw new Error("The end date must be on or after the start date.");
     const days = endDate && endDate !== startDate ? `${readable(startDate)} to ${readable(endDate)}` : readable(startDate);
     return propose({
       title: "Add off day",
-      detail: `${name} · ${days} · all your classes`,
+      detail: `${name} · ${days} · this course`,
       method: "POST",
       path: "/off-days",
-      body: { name, startDate, ...(endDate ? { endDate } : {}) },
+      body: { courseId, name, startDate, ...(endDate ? { endDate } : {}) },
     });
   },
 });
 
 export const proposeAttendanceLine = defineTool({
   name: "propose_attendance_line",
-  description: "Prepare changing the attendance percentage below which students are short, for the teacher to confirm. It applies to all their courses.",
-  input: z.object({ minAttendance: z.number().min(0).max(100) }),
-  run: async ({ minAttendance }) =>
+  description: "Prepare changing one course's attendance percentage below which students are short, for the teacher to confirm. Other courses keep their own line.",
+  input: z.object({ courseId: z.uuid(), minAttendance: z.number().min(0).max(100) }),
+  run: async ({ courseId, minAttendance }) =>
     propose({
       title: "Change attendance line",
-      detail: `Students below ${minAttendance}% count as short · all your courses`,
+      detail: `Students below ${minAttendance}% count as short · this course`,
       method: "PATCH",
-      path: "/me",
+      path: `/courses/${courseId}`,
       body: { minAttendance },
     }),
 });

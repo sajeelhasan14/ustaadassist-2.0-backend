@@ -47,12 +47,12 @@ export const getMaterials = defineTool({
   run: ({ courseId }, api) => api(`/courses/${courseId}/materials`),
 });
 
-// Reads GET /api/v1/off-days.
+// Reads GET /api/v1/off-days. Each course has its own holidays.
 export const getOffDays = defineTool({
   name: "get_off_days",
-  description: "The holidays and off days in a semester. Islamic holidays stay tentative until the teacher confirms them.",
-  input: z.object({ semesterId: z.uuid() }),
-  run: ({ semesterId }, api) => api(`/off-days?semesterId=${semesterId}`),
+  description: "The holidays and off days of one course, inside its semester. Islamic holidays stay tentative until the teacher confirms them.",
+  input: z.object({ courseId: z.uuid() }),
+  run: ({ courseId }, api) => api(`/off-days?courseId=${courseId}`),
 });
 
 // Reads GET /api/v1/assessments/<id>/questions.

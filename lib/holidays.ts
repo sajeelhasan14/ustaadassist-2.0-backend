@@ -1,5 +1,8 @@
+import { query } from "@/lib/db";
+
 // Pakistan's public holidays, worked out for any dates, so teachers never type them in.
-// Used by the off-days list and the class calendar (both add the missing ones to the off_days table).
+// Used by the off-days list, the class calendar and Today (all add the missing ones to the off_days table).
+// Holidays belong to one course: each course has its own list (decision of 2026-11-09).
 
 // Same date every year.
 const nationalHolidays = [
@@ -60,3 +63,26 @@ export function addDays(date: string, days: number): string {
   result.setUTCDate(result.getUTCDate() + days);
   return result.toISOString().slice(0, 10);
 }
+
+// Adds the public holidays between from..to that this course doesn't have yet.
+// ON CONFLICT on (course_id, holiday_key) skips ones already there, including ones the teacher moved or
+// deleted (deleted ones stay as removed = true), so their choice is kept.
+export async function addPublicHolidays(teacherId: string, courseId: string, from: string, to: string): Promise<void> {
+  const holidays = builtInHolidays(from, to);
+  if (holidays.length === 0) return;
+  await query(
+    `INSERT INTO off_days (teacher_id, course_id, holiday_key, name, start_date, end_date, tentative)
+     SELECT $1::uuid, $2::uuid, * FROM unnest($3::text[], $4::text[], $5::date[], $6::date[], $7::boolean[])
+     ON CONFLICT (course_id, holiday_key) DO NOTHING`,
+    [
+      teacherId,
+      courseId,
+      holidays.map((holiday) => holiday.key),
+      holidays.map((holiday) => holiday.name),
+      holidays.map((holiday) => holiday.startDate),
+      holidays.map((holiday) => holiday.endDate),
+      holidays.map((holiday) => holiday.tentative),
+    ],
+  );
+}
+

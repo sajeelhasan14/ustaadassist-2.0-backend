@@ -1,5 +1,7 @@
 # Flow: students in a section (add, list, remove)
 
+> **Added 2026-11-11: `GET /sections/<id>/students/<studentId>`** for the student details screen: `student` (with email), `attendance` (`present`, `marked`, `percentage`, `min` = the course's line, `shortage`, `absentOn` = dates and times missed, newest first) and `marks` (`total`, `outOf`, and every assessment of the course with this student's mark or null). Same sums as `GET /sections/<id>/attendance`.
+
 Files: [app/api/v1/sections/[id]/students/route.ts](../../app/api/v1/sections/[id]/students/route.ts) (GET, POST) ·
 [app/api/v1/sections/[id]/students/[studentId]/route.ts](../../app/api/v1/sections/[id]/students/[studentId]/route.ts) (DELETE) ·
 tables `students`, `enrollments` · migration `20261031133628_students_father_name.sql`

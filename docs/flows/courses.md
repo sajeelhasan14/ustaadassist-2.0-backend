@@ -1,5 +1,7 @@
 # Flow: courses (add, list, edit, delete)
 
+> **Changed 2026-11-11: each course has its own rules.** `GET /courses` and `PATCH /courses/<id>` now return `minAttendance` (the attendance line, default copied from the teacher's newest course), `gradeScale` (list of `{grade, min}`, highest first; the default University of Karachi scale when the course never changed it) and `defaultGradeScale` (true = never changed). `PATCH` accepts `minAttendance` and `gradeScale` (`null` = back to the default). The default scale lives in `lib/grades.ts`.
+
 Files: [app/api/v1/semesters/[id]/courses/route.ts](../../app/api/v1/semesters/[id]/courses/route.ts) (GET, POST) ·
 [app/api/v1/courses/[id]/route.ts](../../app/api/v1/courses/[id]/route.ts) (PATCH, DELETE) · table `courses`
 

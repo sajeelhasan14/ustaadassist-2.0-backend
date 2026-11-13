@@ -1,5 +1,7 @@
 # Flow: timetable, class calendar and attendance
 
+> **Changed 2026-11-11:** the attendance line is per course (`courses.min_attendance`), not per teacher. `GET /sections/<id>/attendance` and Today's warnings use the course's line. `PATCH /me` still accepts `minAttendance`, but nothing reads the teacher's value except as the starting line of a teacher's very first course.
+
 Files: [app/api/v1/sections/[id]/timetable/route.ts](../../app/api/v1/sections/[id]/timetable/route.ts) (GET, PUT) ·
 [app/api/v1/sections/[id]/sessions/route.ts](../../app/api/v1/sections/[id]/sessions/route.ts) (GET, POST) ·
 [app/api/v1/sessions/[id]/route.ts](../../app/api/v1/sessions/[id]/route.ts) (PATCH, DELETE) ·

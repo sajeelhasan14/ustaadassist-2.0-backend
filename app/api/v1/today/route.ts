@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { query } from "@/lib/db";
-import { builtInHolidays } from "@/lib/holidays";
+import { addPublicHolidays } from "@/lib/holidays";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type Section = { id: string; name: string; courseId: string; courseCode: string; courseTitle: string };
@@ -42,27 +42,20 @@ export async function GET(request: Request) {
   );
   const sectionIds = sections.map((section) => section.id);
 
-  // Add a public holiday on this date if the teacher doesn't have it yet (same as GET /off-days).
-  const holidays = builtInHolidays(date, date);
-  await query(
-    `INSERT INTO off_days (teacher_id, holiday_key, name, start_date, end_date, tentative)
-     SELECT $1::uuid, * FROM unnest($2::text[], $3::text[], $4::date[], $5::date[], $6::boolean[])
-     ON CONFLICT (teacher_id, holiday_key) DO NOTHING`,
-    [
-      teacherId,
-      holidays.map((holiday) => holiday.key),
-      holidays.map((holiday) => holiday.name),
-      holidays.map((holiday) => holiday.startDate),
-      holidays.map((holiday) => holiday.endDate),
-      holidays.map((holiday) => holiday.tentative),
-    ],
+  // Each course has its own holidays. Add today's public holiday to any course that doesn't have it yet
+  // (same as GET /off-days), then find which courses are off on this date.
+  const courseIds = [...new Set(sections.map((section) => section.courseId))];
+  for (const courseId of courseIds) await addPublicHolidays(teacherId, courseId, date, date);
+  const offRows = await query<{ courseId: string; name: string; tentative: boolean }>(
+    `SELECT DISTINCT ON (course_id) course_id AS "courseId", name, tentative FROM off_days
+      WHERE course_id = ANY($1::uuid[]) AND NOT removed AND start_date <= $2 AND end_date >= $2
+      ORDER BY course_id, start_date`,
+    [courseIds, date],
   );
-  const [offDay] = await query<{ name: string; tentative: boolean }>(
-    `SELECT name, tentative FROM off_days
-      WHERE teacher_id = $1 AND NOT removed AND start_date <= $2 AND end_date >= $2
-      ORDER BY start_date LIMIT 1`,
-    [teacherId, date],
-  );
+  const offByCourse = new Map(offRows.map((row) => [row.courseId, { name: row.name, tentative: row.tentative }]));
+  const courseOfSection = new Map(sections.map((section) => [section.id, section.courseId]));
+  // The whole day is "off" only when every course with classes today is off.
+  const offDay = courseIds.length > 0 && courseIds.every((id) => offByCourse.has(id)) ? offByCourse.get(courseIds[0])! : null;
 
   const slots = await query<Slot>(
     `SELECT section_id AS "sectionId", to_char(start_time, 'HH24:MI') AS "startTime", to_char(end_time, 'HH24:MI') AS "endTime"
@@ -112,7 +105,7 @@ export async function GET(request: Request) {
     } else {
       classes.push({
         id: null, sectionId: slot.sectionId, startTime: slot.startTime, endTime: slot.endTime,
-        status: offDay ? "off_day" : "planned", extra: false, note: null, present: 0, absent: 0,
+        status: offByCourse.has(courseOfSection.get(slot.sectionId)!) ? "off_day" : "planned", extra: false, note: null, present: 0, absent: 0,
       });
     }
   }
@@ -143,14 +136,9 @@ export async function GET(request: Request) {
     });
   }
 
-  // Which sections have students below the teacher's line. Same sum as GET /sections/<id>/attendance: held classes
-  // only, rounded to one decimal before comparing. Sections with nobody short aren't listed.
-  const [teacher] = await query<{ minAttendance: number }>(
-    `SELECT min_attendance::float8 AS "minAttendance" FROM teachers WHERE id = $1`,
-    [teacherId],
-  );
-  const min = teacher?.minAttendance ?? 75;
-  const short = await query<{ sectionId: string; below: number }>(
+  // Which sections have students below their course's line. Same sum as GET /sections/<id>/attendance: held
+  // classes only, rounded to one decimal before comparing. Sections with nobody short aren't listed.
+  const short = await query<{ sectionId: string; below: number; min: number }>(
     `WITH per_student AS (
        SELECT e.section_id, count(*) FILTER (WHERE a.present) AS present, count(*) AS marked
          FROM enrollments e
@@ -159,13 +147,15 @@ export async function GET(request: Request) {
         WHERE e.section_id = ANY($1::uuid[])
         GROUP BY e.section_id, e.student_id
      )
-     SELECT section_id AS "sectionId", count(*)::int AS below
-       FROM per_student
-      WHERE marked >= $3 AND round(present * 100.0 / marked, 1) < $2
-      GROUP BY section_id`,
-    [sectionIds, min, MIN_CLASSES_FOR_ALERT],
+     SELECT p.section_id AS "sectionId", count(*)::int AS below, c.min_attendance::float8 AS min
+       FROM per_student p
+       JOIN sections sec ON sec.id = p.section_id
+       JOIN courses c ON c.id = sec.course_id
+      WHERE p.marked >= $2 AND round(p.present * 100.0 / p.marked, 1) < c.min_attendance
+      GROUP BY p.section_id, c.min_attendance`,
+    [sectionIds, MIN_CLASSES_FOR_ALERT],
   );
-  const attendanceAlerts = short.map(({ sectionId, below }) => {
+  const attendanceAlerts = short.map(({ sectionId, below, min }) => {
     const section = sections.find((one) => one.id === sectionId)!;
     return { sectionId, sectionName: section.name, courseId: section.courseId, courseCode: section.courseCode, below, min };
   });

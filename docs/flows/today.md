@@ -1,5 +1,7 @@
 # Flow: today's classes (the app's home screen)
 
+> **Changed 2026-11-11:** holidays and the attendance line are per course. A class is `off_day` when its own course is off; the top-level `offDay` is set only when every course with classes that day is off. Each alert's `min` is its course's line.
+
 File: [app/api/v1/today/route.ts](../../app/api/v1/today/route.ts) (GET) · reads `sections`, `timetable_slots`, `off_days`, `class_sessions`, `attendance`, `topics`, `session_topics`
 
 The first screen of the app: **"Today: 09:00 SE-454 A · Linked lists, 11:00 CS-201 A · Trees"**. Tap a class to take attendance.

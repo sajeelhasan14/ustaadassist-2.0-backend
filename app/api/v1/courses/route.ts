@@ -1,4 +1,5 @@
 import { query } from "@/lib/db";
+import { DEFAULT_GRADE_SCALE } from "@/lib/grades";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 // GET /api/v1/courses: every course the teacher has, whatever its semester.
@@ -12,12 +13,14 @@ export async function GET(request: Request) {
   // Newest semester first, then by name, so the courses being taught now are on top.
   const courses = await query(
     `SELECT c.id, c.semester_id AS "semesterId", c.code, c.title, c.total_marks::float8 AS "totalMarks",
-            c.credit_hours AS "creditHours", c.result_header AS "resultHeader"
+            c.credit_hours AS "creditHours", c.result_header AS "resultHeader",
+            c.min_attendance::float8 AS "minAttendance", COALESCE(c.grade_scale, $2::jsonb) AS "gradeScale",
+            c.grade_scale IS NULL AS "defaultGradeScale"
        FROM courses c
        JOIN semesters s ON s.id = c.semester_id
       WHERE s.teacher_id = $1
       ORDER BY s.start_date DESC, c.title`,
-    [teacherId],
+    [teacherId, JSON.stringify(DEFAULT_GRADE_SCALE)],
   );
   return Response.json({ courses });
 }

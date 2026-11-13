@@ -1,5 +1,7 @@
 # Flow: the assistant (agent)
 
+> **Changed 2026-11-11:** `get_off_days` takes a `courseId`, `propose_off_day` adds the day to one course, and `propose_attendance_line` changes one course's line (`PATCH /courses/<id>`), because every course is separate.
+
 [app/api/v1/assistant/route.ts](../../app/api/v1/assistant/route.ts) ·
 [lib/agent/](../../lib/agent/) ·
 [lib/ai.ts](../../lib/ai.ts)
